@@ -1,12 +1,12 @@
 Clone the repository
 ```
-$ git clone https://github.com/casiacob/mirror-map-ilqr
+$ git clone https://github.com/casiacob/mirror-space-ilqr
 ```
 
 Create a conda environment and install the package
 ```
-$ conda create --name mm-ilqr python=3.10
-$ conda activate mm-ilqr
+$ conda create --name ms-ilqr python=3.10
+$ conda activate ms-ilqr
 $ cd mirror-map-ilqr
 $ pip install .
 ```
