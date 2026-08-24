@@ -2,8 +2,8 @@ import jax.numpy as jnp
 import jax.lax
 from jax import jacrev, grad, hessian
 import jax.scipy as jcp
-from objects import IPOCP
-from utils import rollout_dynamics
+from mmilqr.objects import IPOCP
+from mmilqr.utils import rollout_dynamics
 from typing import Callable
 
 

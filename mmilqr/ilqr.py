@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 import jax.scipy as jsc
-from objects import DualOCP, Derivatives
+from mmilqr.objects import DualOCP, Derivatives
 from jax import grad, jacrev, hessian
 import jax
 
