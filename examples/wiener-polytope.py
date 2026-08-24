@@ -3,10 +3,10 @@ import jax.numpy as jnp
 import jax.scipy as jsc
 import optimistix as optx
 
-from mmilqr.utils import rollout_dynamics, discretize_dynamics
-from mmilqr.objects import DualOCP
+from msilqr.utils import rollout_dynamics, discretize_dynamics
+from msilqr.objects import DualOCP
 from jax import config
-from mmilqr.ilqr import solve_dual_ilqr
+from msilqr.ilqr import solve_dual_ilqr
 import matplotlib.pyplot as plt
 
 config.update("jax_enable_x64", True)

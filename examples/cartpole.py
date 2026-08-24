@@ -1,9 +1,9 @@
 import jax
 import jax.numpy as jnp
-from mmilqr.utils import wrap_angle, rollout_dynamics, discretize_dynamics
-from mmilqr.objects import DualOCP
+from msilqr.utils import wrap_angle, rollout_dynamics, discretize_dynamics
+from msilqr.objects import DualOCP
 from jax import config
-from mmilqr.ilqr import solve_dual_ilqr
+from msilqr.ilqr import solve_dual_ilqr
 import matplotlib.pyplot as plt
 
 config.update("jax_enable_x64", True)
