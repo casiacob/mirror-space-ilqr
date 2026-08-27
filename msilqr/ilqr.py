@@ -25,12 +25,6 @@ def compute_derivatives(
     fy = Phi_x_tp1 @ fu @ Psi_inv
     czy = Phi_inv @ cxu @ Psi_inv
 
-    # T_phi = jacrev(ocp.state_dgf_hessian, 0)(state)
-    # T_psi = jacrev(ocp.control_dgf_hessian, 0)(control)
-    #
-    # T_dot_cz = jnp.tensordot(T_phi, cz, axes=(-1, 0))
-    # T_dot_cy = jnp.tensordot(T_psi, cy, axes=(-1, 0))
-
     czz = Phi_inv @ cxx @ Phi_inv
     cyy = Psi_inv @ cuu @ Psi_inv
     return Derivatives(cz, cy, fz, fy, czz, cyy, czy)
@@ -132,8 +126,6 @@ def solve_dual_ilqr(
 ):
     def cond_fun(carry):
         _, _, _, _, _, it, opt_err = carry
-
-        # exit_condition = jnp.logical_or(rel_dcost < tol, it > max_iters)
         exit_condition = opt_err < tol
         return jnp.logical_not(exit_condition)
 
@@ -147,7 +139,6 @@ def solve_dual_ilqr(
         new_states, new_controls = forward_pass(states, controls, K, k, ocp)
         new_cost = ocp.total_cost(new_states, new_controls)
 
-        # Positive means decrease in cost
         actual_reduction = new_cost - cost
 
         gain_ratio = actual_reduction / predicted_reduction
