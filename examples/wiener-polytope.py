@@ -14,7 +14,7 @@ config.update("jax_platform_name", "cpu")
 
 
 def wiener_model(state: jnp.ndarray, control: jnp.ndarray):
-    A = jnp.array(
+    F = jnp.array(
         [
             [0.0, 0.0, 1.0, 0.0],
             [0.0, 0.0, 0.0, 1.0],
@@ -23,7 +23,7 @@ def wiener_model(state: jnp.ndarray, control: jnp.ndarray):
         ]
     )
 
-    B = jnp.array(
+    L = jnp.array(
         [
             [0.0, 0.0],
             [0.0, 0.0],
@@ -32,7 +32,7 @@ def wiener_model(state: jnp.ndarray, control: jnp.ndarray):
         ]
     )
 
-    return A @ state + B @ control
+    return F @ state + L @ control
 
 
 def final_cost(state: jnp.ndarray):
