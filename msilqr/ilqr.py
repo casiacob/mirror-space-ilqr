@@ -6,9 +6,8 @@ import jax
 
 
 def compute_derivatives(
-    state: jnp.ndarray, control: jnp.ndarray, Phi_x_tp1: jnp.ndarray, ocp: DualOCP
+    state: jnp.ndarray, control: jnp.ndarray, ocp: DualOCP
 ):
-    Phi_inv = ocp.state_dgf_inv_hessian(state)
     Psi_inv = ocp.control_dgf_inv_hessian(control)
 
     cx = grad(ocp.stage_cost, 0)(state, control)
@@ -19,15 +18,13 @@ def compute_derivatives(
     fx = jacrev(ocp.dynamics, 0)(state, control)
     fu = jacrev(ocp.dynamics, 1)(state, control)
 
-    cz = Phi_inv @ cx
-    cy = Psi_inv @ cu
-    fz = Phi_x_tp1 @ fx @ Phi_inv
-    fy = Phi_x_tp1 @ fu @ Psi_inv
-    czy = Phi_inv @ cxu @ Psi_inv
 
-    czz = Phi_inv @ cxx @ Phi_inv
+    cy = Psi_inv @ cu
+    fy = fu @ Psi_inv
+    cxy = cxu @ Psi_inv
+
     cyy = Psi_inv @ cuu @ Psi_inv
-    return Derivatives(cz, cy, fz, fy, czz, cyy, czy)
+    return Derivatives(cx, cy, fx, fy, cxx, cyy, cxy)
 
 
 def backward_pass(
@@ -38,45 +35,40 @@ def backward_pass(
 ):
     final_state = state_trajectory[-1]
 
-    Phi_final = ocp.state_dgf_hessian(final_state)
-    Phi_inv_final = ocp.state_dgf_inv_hessian(final_state)
     cx_final = grad(ocp.final_cost, 0)(final_state)
     cxx_final = hessian(ocp.final_cost, 0)(final_state)
-    Vz_final = Phi_inv_final @ cx_final
-    T_phi_final = jacrev(ocp.state_dgf_hessian, 0)(final_state)
-    T_dot_Vz = jnp.tensordot(T_phi_final, Vz_final, axes=(-1, 0))
-    Vzz_final = Phi_inv_final @ (cxx_final - T_dot_Vz) @ Phi_inv_final
+    Vx_final = cx_final
+    Vxx_final = cxx_final
 
     def body(carry, inp):
-        Vz, Vzz, Phi_tp1 = carry
+        Vx, Vxx = carry
         x, u = inp
-        d = compute_derivatives(x, u, Phi_tp1, ocp)
+        d = compute_derivatives(x, u, ocp)
 
-        Qz = d.cz + d.fz.T @ Vz
-        Qy = d.cy + d.fy.T @ Vz
+        Qx = d.cx + d.fx.T @ Vx
+        Qy = d.cy + d.fy.T @ Vx
 
-        Qzz = d.czz + d.fz.T @ Vzz @ d.fz
-        Qyy = d.cyy + d.fy.T @ Vzz @ d.fy + reg_param * jnp.eye(u.shape[0])
-        Qzy = d.czy + d.fz.T @ Vzz @ d.fy
-        Qyz = Qzy.T
+        Qxx = d.cxx + d.fx.T @ Vxx @ d.fx
+        Qyy = d.cyy + d.fy.T @ Vxx @ d.fy + reg_param * jnp.eye(u.shape[0])
+        Qxy = d.cxy + d.fx.T @ Vxx @ d.fy
+        Qyx = Qxy.T
 
         eigvals = jnp.linalg.eigvalsh(Qyy)
         is_pos_def = jnp.all(eigvals > 0)
 
         k = -jsc.linalg.solve(Qyy, Qy)
-        K = -jsc.linalg.solve(Qyy, Qyz)
+        K = -jsc.linalg.solve(Qyy, Qyx)
 
-        Vz = Qz + Qzy @ k + K.T @ Qy + K.T @ Qyy @ k
-        Vzz = Qzz + K.T @ Qyy @ K + K.T @ Qyz + Qzy @ K
-        Vzz = 0.5 * (Vzz + Vzz.T)
+        Vx = Qx + Qxy @ k + K.T @ Qy + K.T @ Qyy @ k
+        Vxx = Qxx + K.T @ Qyy @ K + K.T @ Qyx + Qxy @ K
+        Vxx = 0.5 * (Vxx + Vxx.T)
         dV = Qy @ k + 0.5 * k.T @ Qyy @ k
-        Phi_tp1 = ocp.state_dgf_hessian(x)
 
-        return (Vz, Vzz, Phi_tp1), (K, k, dV, is_pos_def, Qy)
+        return (Vx, Vxx), (K, k, dV, is_pos_def, Qy)
 
     _, (gain, gain_ff, val_fun_stage_diff, pos_def_flags, Q_grad) = jax.lax.scan(
         body,
-        (Vz_final, Vzz_final, Phi_final),
+        (Vx_final, Vxx_final),
         (state_trajectory[:-1], control_sequence),
         reverse=True,
     )
@@ -93,30 +85,28 @@ def forward_pass(
     gain_ff: jnp.ndarray,
     ocp: DualOCP,
 ):
-    dual_states = jax.vmap(ocp.state_mirror_map)(states)
-    dual_controls = jax.vmap(ocp.control_mirror_map)(controls)
+    mirror_controls = jax.vmap(ocp.control_mirror_map)(controls)
 
     def body(carry, inp):
-        prev_z, prev_x = carry
-        z, y, prev_u, k, K = inp
-        dz = prev_z - z
-        y_new = y + k + K @ dz
+        prev_x = carry
+        x, y, prev_u, k, K = inp
+        dx = prev_x - x
+        y_new = y + k + K @ dx
         u_new = ocp.control_inverse_map(y_new, prev_u)
         x_new = ocp.dynamics(prev_x, u_new)
-        z_new = ocp.state_mirror_map(x_new)
-        return (z_new, x_new), (x_new, u_new)
+        return x_new, (x_new, u_new)
 
     _, (new_states, new_controls) = jax.lax.scan(
         body,
-        (dual_states[0], states[0]),
-        (dual_states[:-1], dual_controls, controls, gain_ff, gain),
+        states[0],
+        (states[:-1], mirror_controls, controls, gain_ff, gain),
     )
 
     new_states = jnp.vstack((states[0], new_states))
     return new_states, new_controls
 
 
-def solve_dual_ilqr(
+def solve_mirror_ilqr(
     initial_states: jnp.ndarray,
     initial_controls: jnp.ndarray,
     ocp: DualOCP,

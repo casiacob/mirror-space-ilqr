@@ -3,7 +3,7 @@ import jax.numpy as jnp
 from msilqr.utils import wrap_angle, rollout_dynamics, discretize_dynamics
 from msilqr.objects import DualOCP
 from jax import config
-from msilqr.ilqr import solve_dual_ilqr
+from msilqr.ilqr import solve_mirror_ilqr
 import matplotlib.pyplot as plt
 
 config.update("jax_enable_x64", True)
@@ -96,17 +96,6 @@ def control_inv_dgf_hessian(control):
     return jnp.diag(jnp.atleast_1d(h_inv_diag))
 
 
-def state_dgf_hessian(state):
-    return jnp.eye(state.shape[0])
-
-
-def state_dgf_inv_hessian(state):
-    return jnp.eye(state.shape[0])
-
-
-def state_mirror_map(state):
-    return state
-
 
 discrete_cartpole = discretize_dynamics(cartpole, 0.01)
 horizon = 100
@@ -122,9 +111,6 @@ cartpole_ocp = DualOCP(
     transient_cost,
     final_cost,
     total_cost,
-    state_mirror_map,
-    state_dgf_hessian,
-    state_dgf_inv_hessian,
     control_mirror_map,
     control_dgf_hessian,
     control_inv_dgf_hessian,
@@ -134,7 +120,7 @@ cartpole_ocp = DualOCP(
 
 def mm_mpc_body(carry, inp):
     nominal_states, nominal_controls = carry
-    optimal_states, optimal_controls, _, _, iterations = solve_dual_ilqr(
+    optimal_states, optimal_controls, _, _, iterations = solve_mirror_ilqr(
         nominal_states, nominal_controls, cartpole_ocp
     )
     cost = total_cost(optimal_states, optimal_controls)

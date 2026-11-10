@@ -7,7 +7,7 @@ from msilqr.ipddp import infeasible_ipddp
 from msilqr.utils import rollout_dynamics, discretize_dynamics
 from msilqr.objects import DualOCP, IPOCP
 from jax import config
-from msilqr.ilqr import solve_dual_ilqr
+from msilqr.ilqr import solve_mirror_ilqr
 import matplotlib.pyplot as plt
 
 config.update("jax_enable_x64", True)
@@ -157,18 +157,6 @@ def control_inverse_map(dual_control: jnp.ndarray, prev_controls: jnp.ndarray):
     return sol.value[:n_u]
 
 
-def state_dgf_hessian(state: jnp.ndarray):
-    return jnp.eye(state.shape[0])
-
-
-def state_dgf_inv_hessian(state: jnp.ndarray):
-    return jnp.eye(state.shape[0])
-
-
-def state_mirror_map(state: jnp.ndarray):
-    return state
-
-
 dt = 0.02
 discrete_wiener = discretize_dynamics(wiener_model, dt)
 
@@ -194,9 +182,6 @@ wiener_ocp = DualOCP(
     transient_cost,
     final_cost,
     total_cost,
-    state_mirror_map,
-    state_dgf_hessian,
-    state_dgf_inv_hessian,
     control_mirror_map,
     control_dgf_hessian,
     control_inv_dgf_hessian,
@@ -207,7 +192,7 @@ wiener_ocp = DualOCP(
 def mm_mpc_body(carry, inp):
     nominal_states, nominal_controls = carry
 
-    optimal_states, optimal_controls, _, _, iterations = solve_dual_ilqr(
+    optimal_states, optimal_controls, _, _, iterations = solve_mirror_ilqr(
         nominal_states,
         nominal_controls,
         wiener_ocp,
@@ -359,8 +344,8 @@ mean_ip_mpc_iterations_ma = jnp.mean(all_ip_mpc_iterations_ma, axis=0)
 
 time_ma = jnp.arange(all_mm_mpc_iterations.shape[1])
 
-plt.plot(time_ma, mean_mm_mpc_iterations_ma, label="MM iterations moving average")
-plt.plot(time_ma, mean_ip_mpc_iterations_ma, label="IP iterations moving average")
+plt.plot(time_ma, mean_mm_mpc_iterations_ma, label="MS")
+plt.plot(time_ma, mean_ip_mpc_iterations_ma, label="IP")
 plt.xlabel("MPC step")
 plt.ylabel("Iterations")
 plt.legend()

@@ -7,9 +7,6 @@ class DualOCP(NamedTuple):
     stage_cost: Callable
     final_cost: Callable
     total_cost: Callable
-    state_mirror_map: Callable
-    state_dgf_hessian: Callable
-    state_dgf_inv_hessian: Callable
     control_mirror_map: Callable
     control_dgf_hessian: Callable
     control_dgf_inv_hessian: Callable
@@ -17,13 +14,13 @@ class DualOCP(NamedTuple):
 
 
 class Derivatives(NamedTuple):
-    cz: jnp.ndarray
+    cx: jnp.ndarray
     cy: jnp.ndarray
-    fz: jnp.ndarray
+    fx: jnp.ndarray
     fy: jnp.ndarray
-    czz: jnp.ndarray
+    cxx: jnp.ndarray
     cyy: jnp.ndarray
-    czy: jnp.ndarray
+    cxy: jnp.ndarray
 
 
 class IPOCP(NamedTuple):
