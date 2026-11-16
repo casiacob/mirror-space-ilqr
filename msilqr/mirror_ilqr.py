@@ -214,13 +214,16 @@ class MirrorILQR:
         return self._solve_jit(x0, controls)
 
     def validate_controls(self, controls) -> None:
-        """Raise ``ValueError`` unless every concrete control is in ``int(U)`` (no-op when traced)."""
+        """Raise ``ValueError`` unless every concrete control is in ``int(U)`` (no-op for
+        traced controls; concrete ones are checked even inside ``jit``)."""
         if isinstance(controls, jax.core.Tracer):
             return
-        inside = jax.vmap(self.mirror_map.contains)(controls)
-        if not bool(jnp.all(inside)):
+        with jax.ensure_compile_time_eval():
+            inside = jax.vmap(self.mirror_map.contains)(controls)
+            n_out = int(jnp.sum(~inside))
+        if n_out:
             raise ValueError(
-                f"{int(jnp.sum(~inside))} of {controls.shape[0]} initial controls are not strictly inside "
+                f"{n_out} of {controls.shape[0]} initial controls are not strictly inside "
                 "the constraint set; mirror-space iLQR needs a strictly feasible initial guess"
             )
 

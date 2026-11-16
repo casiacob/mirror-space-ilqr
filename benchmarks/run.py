@@ -6,6 +6,11 @@ Usage (from the repository root)::
     python benchmarks/run.py --out results --cases cartpole polytope
     python benchmarks/regression.py --new results --bitwise   # check against golden
 
+By default the comparison cases run the interior-point baseline as in the paper's Fig. 4
+(``IPDDPOptions.paper()``, cold-started). ``--baseline fixed`` uses the default options,
+which resolve ``docs/PAPER_NOTES.md`` notes 2 and 4, with warm starts (``--ip-cold-start``
+for the paper's restart protocol).
+
 Writes ``<out>/<case>.npz`` (see ``benchmarks/regression.py`` for the format) and
 ``<out>/summary.json`` (iterations, statuses, timings, package versions).
 """
@@ -44,18 +49,28 @@ def _run_method(fn, x0s):
     return stack, wall
 
 
-def run_case(name: str, box_scale: float | None = None, ip_barrier_tol: float | None = None) -> tuple[dict, dict]:
-    """Run one case. ``box_scale`` (cart-pole cases only) and ``ip_barrier_tol`` select
-    variants that differ from the original experiments; leave them ``None`` to reproduce
-    the golden results."""
+def run_case(
+    name: str,
+    box_scale: float | None = None,
+    ip_barrier_tol: float | None = None,
+    baseline: str = "paper",
+    ip_warm_start: bool = True,
+) -> tuple[dict, dict]:
+    """Run one case. ``box_scale`` (cart-pole cases only), ``ip_barrier_tol`` (paper
+    baseline only) and ``baseline="fixed"`` select variants that differ from the original
+    experiments; keep the defaults to reproduce the golden results."""
     case = CASES[name]
     inp = case.inputs()
     out = {"x0": np.asarray(inp.x0)}
     info = {"case": name, "description": case.description, "n_init": int(inp.x0.shape[0]), "steps": inp.steps}
     if box_scale is not None and name.startswith("cartpole"):
         info["box_scale"] = box_scale
-    if ip_barrier_tol is not None and case.ip_solver is not None:
-        info["ip_barrier_tol"] = ip_barrier_tol
+    if case.ip_solver is not None:
+        info["ip_baseline"] = baseline
+        if baseline == "fixed":
+            info["ip_warm_start"] = ip_warm_start
+        elif ip_barrier_tol is not None:
+            info["ip_barrier_tol"] = ip_barrier_tol
 
     ms = case.ms_solver(box_scale=box_scale) if "box_scale" in info else case.ms_solver()
     res, wall = _run_method(lambda x0: mirror_mpc(ms, x0, inp.u_init, inp.steps), inp.x0)
@@ -68,8 +83,12 @@ def run_case(name: str, box_scale: float | None = None, ip_barrier_tol: float | 
     }
 
     if case.ip_solver is not None:
-        ip = case.ip_solver(IPDDPOptions(barrier_tol=ip_barrier_tol)) if "ip_barrier_tol" in info else case.ip_solver()
-        res, wall = _run_method(lambda x0: ipddp_mpc(ip, x0, inp.u_init, inp.ip_slacks, inp.ip_duals, inp.steps), inp.x0)
+        if baseline == "fixed":
+            ip, warm = case.ip_solver(IPDDPOptions()), ip_warm_start
+        else:
+            ip = case.ip_solver(IPDDPOptions.paper(barrier_tol=ip_barrier_tol)) if "ip_barrier_tol" in info else case.ip_solver()
+            warm = False  # the paper's protocol: restart slacks, duals and mu at every step
+        res, wall = _run_method(lambda x0: ipddp_mpc(ip, x0, inp.u_init, inp.ip_slacks, inp.ip_duals, inp.steps, warm_start=warm), inp.x0)
         out.update({f"ip_{k}": v for k, v in res.items()})
         info["ip"] = {
             "wall_s": round(wall, 3),
@@ -85,7 +104,9 @@ def main(argv=None) -> int:
     p.add_argument("--out", required=True)
     p.add_argument("--cases", nargs="*", default=list(CASES), choices=list(CASES))
     p.add_argument("--box-scale", type=float, help="variant: cart-pole box-map scale (original 0.5; paper Table I: 1)")
-    p.add_argument("--ip-barrier-tol", type=float, help="variant: IPDDP also requires barrier parameter < this to stop")
+    p.add_argument("--ip-barrier-tol", type=float, help="variant: the paper's IPDDP also requires barrier parameter < this to stop")
+    p.add_argument("--baseline", choices=["paper", "fixed"], default="paper", help="interior-point baseline (default: as in the paper)")
+    p.add_argument("--ip-cold-start", action="store_true", help="fixed baseline: restart slacks, duals and mu every MPC step")
     args = p.parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
@@ -96,7 +117,13 @@ def main(argv=None) -> int:
         "cases": [],
     }
     for name in args.cases:
-        arrays, info = run_case(name, box_scale=args.box_scale, ip_barrier_tol=args.ip_barrier_tol)
+        arrays, info = run_case(
+            name,
+            box_scale=args.box_scale,
+            ip_barrier_tol=args.ip_barrier_tol,
+            baseline=args.baseline,
+            ip_warm_start=not args.ip_cold_start,
+        )
         np.savez(os.path.join(args.out, name + ".npz"), **arrays)
         summary["cases"].append(info)
         line = f"[run] {name:18s} MS iters {info['ms']['iters_total']:6d} (max {info['ms']['iters_max']:3d}, {info['ms']['wall_s']:.1f}s)"

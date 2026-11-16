@@ -57,7 +57,7 @@ class Case:
     description: str
     inputs: Callable[[], Inputs]
     ms_solver: Callable[..., MirrorILQR]  # cart-pole cases accept box_scale=
-    ip_solver: Callable[..., InteriorPointDDP] | None = None  # accepts options=IPDDPOptions(...)
+    ip_solver: Callable[..., InteriorPointDDP] | None = None  # options default to IPDDPOptions.paper()
 
 
 # ------------------------------------------------------------------- cart-pole ---
@@ -75,7 +75,7 @@ def cartpole_box_constraints(state, control):
 
 
 def cartpole_ip_solver(options: IPDDPOptions | None = None) -> InteriorPointDDP:
-    return InteriorPointDDP(CartPole().problem(), cartpole_box_constraints, options or IPDDPOptions())
+    return InteriorPointDDP(CartPole().problem(), cartpole_box_constraints, options or IPDDPOptions.paper())
 
 
 def cartpole_inputs() -> Inputs:
@@ -112,7 +112,7 @@ def polytope_constraints(state, control):
 
 
 def polytope_ip_solver(options: IPDDPOptions | None = None) -> InteriorPointDDP:
-    return InteriorPointDDP(DoubleIntegrator().problem(), polytope_constraints, options or IPDDPOptions())
+    return InteriorPointDDP(DoubleIntegrator().problem(), polytope_constraints, options or IPDDPOptions.paper())
 
 
 def polytope_inputs() -> Inputs:

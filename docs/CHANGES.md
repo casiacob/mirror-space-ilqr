@@ -25,11 +25,19 @@
   `Ψ⁻¹ = 0` and the solver would otherwise report convergence after one iteration.
   `validate=False` skips the check; the MPC loops use it because their shifted warm
   starts may touch the bound. Input shapes and solver options are checked as well, and
-  `ipddp_mpc` checks slacks and duals like `InteriorPointDDP.solve`.
+  `ipddp_mpc` checks slacks and duals like `InteriorPointDDP.solve`. Concrete inputs are
+  checked even inside `jit` (the check used to raise a tracer error there).
 * IPDDP: works on current JAX; `eigvalsh` instead of the complex `eigvals`; the feedback
   gain of state constraints uses Σ = S⁻¹Z instead of S⁻¹ (a bug that does not affect the
-  benchmarks, which constrain controls only); optional `barrier_tol`, `barrier_init`, and
-  a fallback when the original initial-barrier rule gives μ₀ ≤ 0 (non-positive costs).
+  benchmarks, which constrain controls only); `barrier_init`, and a fallback when the
+  original initial-barrier rule gives μ₀ ≤ 0 (non-positive costs).
+* The default IPDDP options resolve the baseline points of `docs/PAPER_NOTES.md` (notes 2
+  and 4): it stops only once μ < `barrier_tol` (1e-6); controls, slacks and duals take one
+  step size, halved until the fraction-to-boundary rule holds; a filter on (barrier cost,
+  `‖g + s‖₁`) accepts steps; `ipddp_mpc` warm-starts slacks, duals and μ.
+  `IPDDPOptions.paper()` reproduces the paper's baseline bitwise, and
+  `benchmarks/run.py --baseline fixed` runs the comparison with the fixed one. Tested
+  against a projected-gradient QP solution and SciPy's SLSQP.
 * MPC loops record the applied controls.
 * The regression gate also requires every MPC solve to converge (a result without status
   fails) and checks the polytope iteration counts. In CI the regression test fails,

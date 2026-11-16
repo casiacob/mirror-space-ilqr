@@ -21,17 +21,42 @@ Numbers are from `benchmarks/run.py` with the variant flags shown, or from the s
 2. **The interior-point baseline stops before its barrier parameter reaches `tol`.** IPDDP
    stops when the barrier subproblem's residual is below `tol`, so it returns
    central-path points, and its Fig. 4 counts exclude the iterations needed to drive μ to
-   `tol`. With `--ip-barrier-tol 1e-6`: `cartpole-compare` IP 88,565 iterations
-   (+19.5 %), `polytope-compare` IP 60,641 (+15 %, with two solves stalled at the
-   1,000-iteration cap).
+   `tol`. With `--ip-barrier-tol 1e-6` (that one change to the paper's baseline):
+   `cartpole-compare` IP 88,565 iterations (+19.5 %), `polytope-compare` IP 60,641
+   (+15 %, with two solves stalled at the 1,000-iteration cap). Resolved in the library:
+   the default options stop only once μ < 10⁻⁶, without stalls (note 4).
 3. **The two methods use different stopping tests.** MS stops on `max|Q_y|` in mirror
    coordinates. That quantity is `Ψ⁻¹Q_u`, so it vanishes at saturated controls whatever the
-   sign of the control-space gradient. IP stops on `max(|Q_u|, |r_p|, |r_d|)`.
-4. **The baseline is cold-started.** IP restarts slacks (0.1), duals (0.01), μ and λ at
-   every MPC step, while MS warm-starts its controls. Warm-starting only slacks and duals
-   makes IPDDP worse (every second solve stalls), because μ is reset; a warm start would
-   have to carry μ as well. The step acceptance also ignores primal infeasibility, and the
-   fraction-to-boundary rule is applied per stage.
+   sign of the control-space gradient. IP stops on `max(|Q_u|, |r_p|, |r_d|)`; with the
+   default options it also requires μ < 10⁻⁶, so it stops at a KKT point of the
+   constrained problem.
+4. **The baseline is cold-started and simplified.** The paper's baseline restarts slacks
+   (0.1), duals (0.01), μ and λ at every MPC step, while MS warm-starts its controls. Its
+   step acceptance ignores primal infeasibility, and it takes full control steps with
+   separate per-stage fraction-to-boundary factors for slacks and duals. The library's
+   default options resolve these points (`IPDDPOptions.paper()` keeps the original to
+   reproduce Fig. 4):
+   * one step size for controls, slacks and duals at all stages, halved until the
+     fraction-to-boundary rule holds;
+   * a step is accepted by a filter on (barrier cost, `‖g + s‖₁`);
+   * `ipddp_mpc` warm-starts slacks, duals and μ (their mean product) after the first
+     step.
+
+   Two details keep it from stalling: μ is also decreased once the residual is below
+   `tol`, and the first MPC step uses the initial-barrier rule. Iterations per MPC step
+   (max) with `run.py --baseline fixed`:
+
+   | | `polytope-compare` | `cartpole-compare` |
+   |---|---|---|
+   | MS | 9.2 (36) | 5.8 (102) |
+   | paper's baseline (Fig. 4) | 17.6 (38) | 18.5 (43) |
+   | fixed baseline, cold-started (`--ip-cold-start`) | 20.4 (39) | 25.3 (52) |
+   | fixed baseline, warm-started | 6.8 (38) | 8.3 (72) |
+
+   Every solve of the fixed baseline converges with μ < 10⁻⁶. Warm-started, it needs 26 %
+   fewer iterations than MS on the double integrator and 42 % more on the cart-pole.
+   Cold-started, it needs more iterations than the paper's baseline because it drives μ
+   to `tol`.
 5. **Settings of the comparison.** The 10 initial states of `polytope-compare` are sampled
    around 0 (std 0.1 / 0.005), not around Fig. 2's `x0 = [0.2, −0.1, −0.1, 0.1]`. Fig. 4
    shows a trailing 10-step moving average. Settings not stated in the paper: Euler steps

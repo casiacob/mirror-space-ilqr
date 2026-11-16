@@ -1,11 +1,13 @@
-"""Interior-point DDP baseline."""
+"""Interior-point DDP baseline: the paper's variant and the fixed default."""
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+import scipy.optimize
+from test_solver import T, box, lq_1d, reference_qp
 
-from msilqr import DoubleIntegrator, InteriorPointDDP, IPDDPOptions, OptimalControlProblem, Status, ipddp_mpc
+from msilqr import BoxEntropy, DoubleIntegrator, InteriorPointDDP, IPDDPOptions, MirrorILQR, OptimalControlProblem, Status, ipddp_mpc
 from msilqr.systems import POLYTOPE_G, POLYTOPE_H
 
 G, H = jnp.array(POLYTOPE_G), jnp.array(POLYTOPE_H)
@@ -78,10 +80,13 @@ def polytope_inputs():
 
 def test_status_cap_and_barrier_tol():
     x0, u0, s0, z0 = polytope_inputs()
-    sol = polytope_solver().solve(x0, u0, s0, z0)
-    assert sol.status == Status.CONVERGED and sol.barrier > 1e-6  # the original stops before mu reaches tol
-    strict = polytope_solver(barrier_tol=1e-6).solve(x0, u0, s0, z0)
-    assert strict.status == Status.CONVERGED and strict.barrier < 1e-6 and strict.iterations > sol.iterations
+    paper = InteriorPointDDP(DoubleIntegrator().problem(), lambda x, u: G @ u - H, IPDDPOptions.paper()).solve(x0, u0, s0, z0)
+    assert paper.status == Status.CONVERGED and paper.barrier > 1e-6  # the paper's baseline stops before mu reaches tol
+    strict = InteriorPointDDP(DoubleIntegrator().problem(), lambda x, u: G @ u - H, IPDDPOptions.paper(barrier_tol=1e-6))
+    strict = strict.solve(x0, u0, s0, z0)
+    assert strict.status == Status.CONVERGED and strict.barrier < 1e-6 and strict.iterations > paper.iterations
+    fixed = polytope_solver().solve(x0, u0, s0, z0)  # the default stops only once mu < 1e-6
+    assert fixed.status == Status.CONVERGED and fixed.barrier < 1e-6
     capped = polytope_solver(max_iter=3).solve(x0, u0, s0, z0)
     assert int(capped.iterations) == 3 and capped.status == Status.MAX_ITER
     none = polytope_solver(max_iter=0).solve(x0, u0, s0, z0)
@@ -119,3 +124,92 @@ def test_rejects_nonpositive_slacks_or_duals():
 def test_options_are_validated(bad):
     with pytest.raises(ValueError):
         IPDDPOptions(**bad)
+
+
+# --------------------------------------------- the fixed default against references ---
+
+
+def box_constraints(x, u):
+    return jnp.concatenate((u - 1.0, -u - 1.0))
+
+
+# At the barrier optimum a constraint with multiplier z keeps a slack of about mu / z, so
+# at mu ~ 1e-7 weakly active constraints (small z) leave controls ~1e-3 from the exact
+# optimum while the cost is within ~1e-7 (relative). Hence the control tolerance below.
+CONTROL_ATOL = 2e-3
+
+
+def check_kkt_point(sol, constraints, tol=1e-6):
+    assert sol.status == Status.CONVERGED and sol.barrier < tol and sol.error < tol
+    c = jax.vmap(constraints)(sol.states[:-1], sol.controls)
+    assert float(jnp.max(jnp.abs(c + sol.slacks))) <= tol and float(jnp.max(c)) <= tol
+
+
+def test_box_constrained_lq_matches_projected_gradient():
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])  # 26 of the 30 optimal controls on the bound
+    u_ref, J_ref = reference_qp(problem, x0, 1, box(-1.0, 1.0))
+    sol = InteriorPointDDP(problem, box_constraints).solve(x0, jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2)))
+    check_kkt_point(sol, box_constraints)
+    np.testing.assert_allclose(problem.total_cost(sol.states, sol.controls), J_ref, rtol=1e-6)
+    np.testing.assert_allclose(sol.controls, u_ref, atol=CONTROL_ATOL)
+
+
+def test_polytope_constrained_double_integrator_matches_scipy():
+    problem, horizon = DoubleIntegrator().problem(), 15
+    x0 = jnp.array([0.2, -0.1, -0.1, 0.1])
+
+    def J(U):
+        u = jnp.reshape(U, (horizon, 2))
+        return problem.total_cost(problem.rollout(x0, u), u)
+
+    J_jit, dJ = jax.jit(J), jax.jit(jax.grad(J))
+    Gn, Hn = np.asarray(G), np.asarray(H)
+    cons = {"type": "ineq", "fun": lambda U: -(np.reshape(U, (horizon, 2)) @ Gn.T - Hn).ravel()}
+    ref = scipy.optimize.minimize(
+        lambda U: float(J_jit(U)), np.zeros(2 * horizon), jac=lambda U: np.asarray(dJ(jnp.asarray(U))), constraints=[cons],
+        method="SLSQP", options={"ftol": 1e-14, "maxiter": 1000},
+    )  # fmt: skip
+    assert ref.success
+    u_ref = ref.x.reshape(horizon, 2)
+    assert float(np.max(u_ref @ Gn.T - Hn)) > -1e-6, "the constraints should be active"
+
+    constraints = lambda x, u: G @ u - H  # noqa: E731
+    sol = InteriorPointDDP(problem, constraints).solve(x0, jnp.zeros((horizon, 2)), jnp.ones((horizon, 8)), jnp.ones((horizon, 8)))
+    check_kkt_point(sol, constraints)
+    np.testing.assert_allclose(problem.total_cost(sol.states, sol.controls), ref.fun, rtol=1e-6)
+    np.testing.assert_allclose(sol.controls, u_ref, atol=CONTROL_ATOL)
+
+
+@pytest.mark.parametrize("warm_start", [True, False])
+def test_mpc_warm_and_cold(warm_start):
+    problem = DoubleIntegrator().problem()
+    x0, u0, s0, z0 = polytope_inputs()
+    res = ipddp_mpc(polytope_solver(), x0, u0, s0, z0, 25, warm_start=warm_start)
+    assert jnp.all(res.status == 0)
+    np.testing.assert_allclose(res.states[1:], jax.vmap(problem.dynamics)(res.states[:-1], res.controls), rtol=0, atol=1e-14)
+    assert float(jnp.max(res.controls @ G.T - H)) <= 1e-6
+
+
+def test_solve_inside_jit_with_constant_inputs():
+    """Concrete inputs closed over inside jit are still checked, without a tracer error."""
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])
+    u0, s0, z0 = jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2))
+    s_bad = -s0
+    ip = InteriorPointDDP(problem, box_constraints)
+    ms = MirrorILQR(problem, BoxEntropy(-1.0, 1.0))
+    np.testing.assert_allclose(jax.jit(lambda x: ip.solve(x, u0, s0, z0).controls)(x0), ip.solve(x0, u0, s0, z0).controls)
+    np.testing.assert_allclose(jax.jit(lambda x: ms.solve(x, u0).controls)(x0), ms.solve(x0, u0).controls)
+    with pytest.raises(ValueError, match="strictly positive"):
+        jax.jit(lambda x: ip.solve(x, u0, s_bad, z0).controls)(x0)
+
+
+def test_barrier_override_and_options():
+    x0, u0, s0, z0 = polytope_inputs()
+    with pytest.raises(ValueError, match="barrier"):
+        polytope_solver().solve(x0, u0, s0, z0, barrier=0.0)
+    assert int(polytope_solver(max_iter=0).solve(x0, u0, s0, z0, barrier=0.5).iterations) == 0
+    assert float(polytope_solver(max_iter=0).solve(x0, u0, s0, z0, barrier=0.5).barrier) == 0.5
+    paper = IPDDPOptions.paper()
+    assert paper.barrier_tol is None and not paper.line_search and IPDDPOptions().line_search
+    with pytest.raises(ValueError):
+        IPDDPOptions(max_backtracks=-1)

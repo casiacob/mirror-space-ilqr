@@ -73,36 +73,62 @@ def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int) -> MPCR
     return fn(x0, u_init)
 
 
-def _ipddp_mpc_fn(solver, num_steps: int):
+def _ipddp_mpc_fn(solver, num_steps: int, warm_start: bool):
     dynamics = solver.problem.dynamics
+    opt = solver.options
+    mu_floor = (opt.barrier_tol if opt.barrier_tol is not None else opt.tol) / 10.0
 
     def run(x0, u_init, slacks, duals):
-        def body(carry, _):
-            state, controls = carry
-            sol = solver.solve(state, controls, slacks, duals)
-            applied = sol.controls[0]
-            next_state = dynamics(state, applied)
-            out = (next_state, applied, sol.iterations, sol.status)
-            return (next_state, _shift(sol.controls)), out
+        if warm_start and num_steps > 0:
 
-        _, (xs, us, its, status) = jax.lax.scan(body, (x0, u_init), None, length=num_steps)
+            def solve_step(state, controls, s, z, barrier):
+                sol = solver.solve(state, controls, s, z, barrier=barrier)
+                applied = sol.controls[0]
+                next_state = dynamics(state, applied)
+                out = (next_state, applied, sol.iterations, sol.status)
+                return (next_state, _shift(sol.controls), _shift(sol.slacks), _shift(sol.duals)), out
+
+            def body(carry, _):
+                state, controls, s, z = carry
+                return solve_step(state, controls, s, z, jnp.maximum(jnp.mean(s * z), mu_floor))  # centred at the warm start
+
+            # the given slacks and duals are not a warm start: the first step uses the initial-barrier rule
+            carry, first = solve_step(x0, u_init, slacks, duals, None)
+            _, rest = jax.lax.scan(body, carry, None, length=num_steps - 1)
+            xs, us, its, status = (jnp.concatenate((f[None], r)) for f, r in zip(first, rest, strict=True))
+        else:
+
+            def body(carry, _):
+                state, controls = carry
+                sol = solver.solve(state, controls, slacks, duals)
+                applied = sol.controls[0]
+                next_state = dynamics(state, applied)
+                out = (next_state, applied, sol.iterations, sol.status)
+                return (next_state, _shift(sol.controls)), out
+
+            _, (xs, us, its, status) = jax.lax.scan(body, (x0, u_init), None, length=num_steps)
         return MPCResult(jnp.vstack((x0, xs)), us, its, status, jnp.full(num_steps, jnp.nan))
 
     return jax.jit(run)
 
 
-def ipddp_mpc(solver, x0: jax.Array, u_init: jax.Array, slacks: jax.Array, duals: jax.Array, num_steps: int) -> MPCResult:
+def ipddp_mpc(
+    solver, x0: jax.Array, u_init: jax.Array, slacks: jax.Array, duals: jax.Array, num_steps: int, *, warm_start: bool = True
+) -> MPCResult:
     """Closed loop of :class:`~msilqr.ipddp.InteriorPointDDP`.
 
-    As in the paper's experiments, the controls are warm-started (shifted plan) but every
-    MPC step restarts from the given ``slacks`` and ``duals``, and the barrier parameter
-    and regularization are re-initialized. Warm-starting only the slacks and duals is not
-    an improvement: with the barrier parameter reset to its large initial value the
-    complementarity residual is inconsistent and every second solve stalls at the
-    iteration cap (observed on the double integrator).
+    With ``warm_start=True`` every MPC step after the first starts from the shifted
+    controls, slacks and duals of the previous plan, with the barrier parameter set to their
+    average complementarity ``mean(s z)`` (at least ``barrier_tol / 10``), so the warm start
+    lies near the central path. The first step starts from the given slacks and duals with
+    the initial barrier rule. With ``warm_start=False`` (the protocol of the paper's Fig. 4)
+    only the controls are warm-started: every step restarts from the given ``slacks`` and
+    ``duals`` with the initial barrier rule. Warm-starting slacks and duals while resetting
+    the barrier parameter is worse than either (``docs/PAPER_NOTES.md``, note 4).
     """
     check_trajectory_shapes(x0, u_init, slacks, duals)
     x0, u_init, slacks, duals = (_as_float64(a) for a in (x0, u_init, slacks, duals))
     solver.validate_slacks_duals(slacks, duals)
-    fn = _cached(solver, ("ipddp", int(num_steps)), lambda: _ipddp_mpc_fn(solver, int(num_steps)))
+    key = ("ipddp", int(num_steps), bool(warm_start))
+    fn = _cached(solver, key, lambda: _ipddp_mpc_fn(solver, int(num_steps), bool(warm_start)))
     return fn(x0, u_init, slacks, duals)

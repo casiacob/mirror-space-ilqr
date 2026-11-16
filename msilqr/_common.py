@@ -28,6 +28,7 @@ __all__ = [
     "as_float64",
     "check_trajectory_shapes",
     "require_x64",
+    "check_slacks_duals",
 ]
 
 
@@ -127,6 +128,17 @@ def check_trajectory_shapes(x0, controls, *per_stage) -> None:
     for a in per_stage:
         if jnp.ndim(a) != 2 or jnp.shape(a)[0] != horizon:
             raise ValueError(f"per-stage arrays must have shape ({horizon}, k), got shape {jnp.shape(a)}")
+
+
+def check_slacks_duals(slacks, duals) -> None:
+    """Raise ``ValueError`` unless concrete slacks and duals are strictly positive and
+    finite (no-op for traced values; concrete values are checked even inside ``jit``)."""
+    if isinstance(slacks, jax.core.Tracer) or isinstance(duals, jax.core.Tracer):
+        return
+    with jax.ensure_compile_time_eval():
+        ok = all(bool(jnp.all((a > 0) & jnp.isfinite(a))) for a in (slacks, duals))
+    if not ok:
+        raise ValueError("initial slacks and duals must be strictly positive and finite")
 
 
 def require_x64() -> None:

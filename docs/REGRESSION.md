@@ -12,7 +12,10 @@ everything around it. Three pieces enforce that:
   in plain NumPy (independent of `msilqr`). Per case and method it checks that every MPC
   solve converged, closed-loop consistency with the dynamics, total and maximum iterations
   per MPC step, closed-loop cost, constraint satisfaction and goal error against the
-  golden run. `--bitwise` also requires exact equality.
+  golden run. `--bitwise` also requires exact equality. The comparison cases run the
+  interior-point baseline with `IPDDPOptions.paper()`; its default options
+  (`run.py --baseline fixed`) change the results and are checked by
+  `tests/test_ipddp.py` instead.
 * `tests/test_regression.py` runs both (`pytest -m slow`); `tests/test_gate.py` checks
   that the gate catches damaged results.
 
