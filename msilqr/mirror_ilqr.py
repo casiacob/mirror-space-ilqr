@@ -43,9 +43,9 @@ from msilqr._common import (
     check_trajectory_shapes,
     expand_stage,
     gain_ratio_update,
+    require_x64,
     termination_status,
 )
-from msilqr._x64 import require_x64
 from msilqr.mirror_maps import MirrorMap
 from msilqr.problem import OptimalControlProblem, rollout
 

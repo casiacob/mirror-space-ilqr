@@ -50,7 +50,7 @@ identical.
 | R1 | major | JAX 0.12 requires Python ≥ 3.12, so the Python 3.11 CI job could not install. | Fixed: `requires-python = ">=3.12"`, CI matrix 3.12–3.14. |
 | R2 | major | `EuclideanBall.inverse` capped the radius at `1 − 2⁻⁵²`; rounding put about 5 % of large random `y` on or outside the sphere, where `grad` is NaN. | Fixed: cap `1 − 2⁻⁴⁹`, `grad`/`inv_hessian` floored, randomized test in 2–100 dimensions. |
 | R3 | major | Reverse-mode derivatives of `EuclideanBall.inverse` were NaN at `y = 0` (the unused branch leaked `0 · ∞`). | Fixed: each branch gets a safe input ("double where"); `jacrev` = `jacfwd` tested. |
-| R4 | minor | The claim that every map returns a finite `grad` was false for the ball and the polytope map. | Fixed: claim limited to the closed-form maps (module docstring, README, CHANGES). |
+| R4 | minor | The claim that every map returns a finite `grad` was false for the ball and the polytope map. | Fixed: claim limited to the closed-form maps (module docstring, CHANGES). |
 | R5 | minor | An eager (`disable_jit`) MPC loop raised on shifted plans whose controls rounded onto the bound. | Fixed: `solve(..., validate=False)`, used by the MPC loops; tested eagerly. |
 | R6 | minor | `ipddp_mpc` did not check slacks and duals; solver options were not validated. | Fixed, tested. |
 | R7 | minor | The CI regression test could skip (and pass) without the original commit; a result without status skipped the convergence check; ruff was unpinned. | Fixed: `MSILQR_REQUIRE_REGRESSION=1` in CI, missing status fails, separate lint job with ruff 0.17.5. |

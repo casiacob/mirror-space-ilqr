@@ -27,6 +27,7 @@ __all__ = [
     "termination_status",
     "as_float64",
     "check_trajectory_shapes",
+    "require_x64",
 ]
 
 
@@ -126,6 +127,12 @@ def check_trajectory_shapes(x0, controls, *per_stage) -> None:
     for a in per_stage:
         if jnp.ndim(a) != 2 or jnp.shape(a)[0] != horizon:
             raise ValueError(f"per-stage arrays must have shape ({horizon}, k), got shape {jnp.shape(a)}")
+
+
+def require_x64() -> None:
+    """Raise unless ``jax_enable_x64`` is on: in float32 the solvers may never reach ``tol``."""
+    if not jax.config.jax_enable_x64:
+        raise RuntimeError('msilqr requires double precision. Enable it before creating arrays: jax.config.update("jax_enable_x64", True)')
 
 
 def as_float64(a):

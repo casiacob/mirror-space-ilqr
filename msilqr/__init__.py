@@ -1,9 +1,6 @@
-"""Mirror-space constrained optimal control (Iacob, Abdulsamad, Sarkka).
+"""Mirror-space iLQR: optimal control with convex control constraints.
 
-Mirror-space iLQR handles convex control constraints by solving iLQR in the mirror
-coordinates ``y = grad psi(u)`` of a Legendre-type function ``psi`` whose domain is the
-constraint set, so every iterate is feasible (strictly feasible in exact arithmetic; in
-float64 a saturated control can round onto the boundary).
+The solver runs iLQR in mirror coordinates, so every iterate satisfies the constraints.
 """
 
 from msilqr._common import RegularizationOptions, Status
