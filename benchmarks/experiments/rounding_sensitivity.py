@@ -1,7 +1,7 @@
 """Mathematically identical rewrites of the backward pass change the cart-pole results.
 
-Variants of :class:`msilqr.MirrorILQR` on ``cartpole-compare`` (README, "Performance
-follow-ups"):
+Variants of :class:`msilqr.MirrorILQR` on ``cartpole-compare`` (``docs/REGRESSION.md``,
+"Performance follow-ups"):
 
 * derivatives of all stages computed with ``jax.vmap`` before the backward scan,
 * one Cholesky factorization of ``Qhat_yy`` per stage instead of two LU solves,

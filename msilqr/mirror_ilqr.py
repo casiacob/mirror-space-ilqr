@@ -22,8 +22,8 @@ Numerical reproducibility: the floating-point operations follow the original
 implementation (commit effb14c) one to one, which the regression benchmarks check
 bitwise. MPC closed loops on the cart-pole are chaotically sensitive to rounding, so
 even mathematically identical rewrites (Cholesky instead of LU, derivatives vmapped
-over the horizon) change iteration counts; see the README before "optimizing" this
-module.
+over the horizon) change iteration counts; see ``docs/REGRESSION.md`` before
+"optimizing" this module.
 """
 
 from __future__ import annotations
@@ -36,7 +36,15 @@ import jax.numpy as jnp
 import jax.scipy as jsc
 from jax import grad, hessian
 
-from msilqr._common import RegularizationOptions, Status, as_float64, expand_stage, gain_ratio_update, termination_status
+from msilqr._common import (
+    RegularizationOptions,
+    Status,
+    as_float64,
+    check_trajectory_shapes,
+    expand_stage,
+    gain_ratio_update,
+    termination_status,
+)
 from msilqr._x64 import require_x64
 from msilqr.mirror_maps import MirrorMap
 from msilqr.problem import OptimalControlProblem, rollout
@@ -49,7 +57,7 @@ class SolverOptions(RegularizationOptions):
     """Options of :class:`MirrorILQR` (defaults reproduce the paper's experiments).
 
     The stopping measure is ``max_t |Q_y,t|``; see
-    :class:`~msilqr._common.RegularizationOptions` for the fields.
+    :class:`~msilqr.RegularizationOptions` for the fields.
     """
 
 
@@ -188,19 +196,21 @@ class MirrorILQR:
 
     # ----------------------------------------------------------------- main loop ---
 
-    def solve(self, x0: jax.Array, controls: jax.Array) -> Solution:
+    def solve(self, x0: jax.Array, controls: jax.Array, *, validate: bool = True) -> Solution:
         """Solve from the initial state ``x0`` (``(n,)``) and initial controls ``(T, m)``.
 
         The initial controls must be strictly feasible (in ``int(U)``): at a boundary
         point ``Psi^{-1} = 0``, so the mirror-space gradient vanishes and the solver would
-        stop at once. Concrete inputs are checked and a ``ValueError`` is raised otherwise
-        (inside ``jit``/``scan``, e.g. in :func:`~msilqr.mpc.mirror_mpc`, the check is
-        skipped: MPC warm starts may legitimately contain controls that rounded onto the
-        bound).
+        stop at once. With ``validate=True`` concrete controls are checked and a
+        ``ValueError`` is raised otherwise (traced controls cannot be checked).
+        ``validate=False`` skips the check; the MPC loops use it because their warm starts
+        (shifted plans) may legitimately contain controls that rounded onto the bound.
         """
         require_x64()
+        check_trajectory_shapes(x0, controls)
         x0, controls = as_float64(x0), as_float64(controls)
-        self.validate_controls(controls)
+        if validate:
+            self.validate_controls(controls)
         return self._solve_jit(x0, controls)
 
     def validate_controls(self, controls) -> None:
@@ -239,6 +249,6 @@ class MirrorILQR:
             cost = jnp.where(accept, new_cost, cost)
             return states, controls, reg, reg_factor, cost, it + 1, err
 
-        init = (states, controls, jnp.array(opt.reg_init), jnp.array(opt.reg_factor_init), total_cost(states, controls), 0, 1e10)
+        init = (states, controls, jnp.array(opt.reg_init), jnp.array(opt.reg_factor_init), total_cost(states, controls), 0, jnp.inf)
         states, controls, reg, _, cost, it, err = jax.lax.while_loop(keep_going, iteration, init)
         return Solution(states, controls, cost, it, reg, err, termination_status(err < opt.tol, err, it))

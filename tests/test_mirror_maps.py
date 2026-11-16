@@ -128,10 +128,48 @@ def test_positivity_and_ball_extreme_inputs():
     np.testing.assert_allclose(ball.inverse(jnp.array([3.0, 4.0])), jnp.array([3.0, 4.0]) / jnp.sqrt(26.0), rtol=1e-15)
 
 
+@pytest.mark.parametrize("dim", [2, 3, 10, 100])
+def test_ball_inverse_stays_inside_for_large_random_y(dim):
+    """Rounding in the capped branch must never put u on or outside the sphere."""
+    rng = np.random.default_rng(dim)
+    directions = rng.normal(size=(4000, dim))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    radii = np.exp(rng.uniform(np.log(1e6), np.log(1e300), size=(4000, 1)))
+    ball = EuclideanBall()
+    u = jax.vmap(ball.inverse)(jnp.asarray(directions * radii))
+    assert bool(jnp.all(jax.vmap(ball.contains)(u)))
+    assert bool(jnp.all(jnp.isfinite(jax.vmap(ball.grad)(u))))
+
+
+@pytest.mark.parametrize("y", [[0.0, 0.0], [1e-300, 0.0], [1e-160, -1e-160], [3.0, -4.0], [2e7, 1e7], [1e200, -3e199]])
+def test_ball_inverse_reverse_mode_derivatives_are_finite(y):
+    """Both branches of the inverse are evaluated; the unused one must not leak NaN."""
+    ball, y = EuclideanBall(), jnp.array(y)
+    J_rev, J_fwd = jax.jacrev(ball.inverse)(y), jax.jacfwd(ball.inverse)(y)
+    assert bool(jnp.all(jnp.isfinite(J_rev)))
+    np.testing.assert_allclose(J_rev, J_fwd, rtol=1e-12, atol=1e-15)
+    if float(jnp.linalg.norm(y)) < 1e-100:
+        np.testing.assert_array_equal(J_rev, jnp.eye(2))
+
+
+def test_ball_grad_is_finite_on_the_sphere():
+    ball, u = EuclideanBall(), jnp.array([0.6, 0.8])
+    assert bool(jnp.all(jnp.isfinite(ball.grad(u)))) and bool(jnp.all(jnp.isfinite(ball.inv_hessian(u))))
+
+
+def test_box_accepts_list_bounds():
+    for cls in (BoxEntropy, BoxLogBarrier):
+        mmap = cls([-1.0, 0.0], [1.0, 2.0])
+        u = mmap.inverse(jnp.array([0.3, -0.2]))
+        assert mmap.contains(u)
+        np.testing.assert_allclose(mmap.grad(u), jnp.array([0.3, -0.2]), rtol=1e-12)
+
+
 def test_contains():
     assert BoxEntropy(-1.0, 1.0).contains(jnp.array([0.5])) and not BoxEntropy(-1.0, 1.0).contains(jnp.array([1.0]))
     assert BoxLogBarrier(0.0, 2.0).contains(jnp.array([1.0])) and not BoxLogBarrier(0.0, 2.0).contains(jnp.array([0.0]))
     assert Positivity().contains(jnp.array([1e-300])) and not Positivity().contains(jnp.array([0.0, 1.0]))
+    assert not Positivity().contains(jnp.array([jnp.inf])) and not Positivity().contains(jnp.array([jnp.nan]))
     assert EuclideanBall().contains(jnp.array([0.6, 0.7])) and not EuclideanBall().contains(jnp.array([0.6, 0.8]))
     poly = PolytopeLogBarrier(G=jnp.array(POLYTOPE_G), h=jnp.array(POLYTOPE_H))
     assert poly.contains(jnp.array([0.1, 0.1])) and not poly.contains(jnp.array([0.5, 0.0]))

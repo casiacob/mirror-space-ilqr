@@ -77,10 +77,10 @@ CASES = [
     ("box-log-barrier", lq_1d, BoxLogBarrier(-1.0, 1.0), [3.0, 0.0], 0.0, box(-1.0, 1.0), 1e-6, True),
     ("positivity", lq_1d, Positivity(), [3.0, 0.0], 0.5, lambda u: jnp.maximum(u, 0.0), 1e-6, True),
     ("euclidean-ball-axis", lq_2d, EuclideanBall(), [2.0, 0.0, 0.0, 0.0], 0.0, unit_ball_projection, 1e-6, True),
-    # Known limitation (README): when the optimal controls slide along the curved boundary
-    # of the ball, the lambda*I damping in mirror coordinates makes progress roughly like
-    # 1/k (error 5.5e-4, 9e-5, 1.1e-5 after 1k, 5k, 20k iterations). Feasible and close,
-    # but not converged within the default cap.
+    # Known limitation (docs/PAPER_NOTES.md, note 10): when the optimal controls slide along
+    # the curved boundary of the ball, the lambda*I damping in mirror coordinates makes
+    # progress roughly like 1/k (error 3.7e-4, 9.0e-5, 1.3e-5 after 1k, 5k, 20k iterations).
+    # Feasible and close, but not converged within the default cap.
     ("euclidean-ball-oblique", lq_2d, EuclideanBall(), [3.0, -2.0, 0.0, 0.0], 0.0, unit_ball_projection, 1e-4, False),
 ]
 
@@ -126,6 +126,50 @@ def test_rejects_initial_guess_outside_interior(mmap, u_bad):
         MirrorILQR(problem, mmap).solve(jnp.array([-3.0, 0.0]), u0)
     with pytest.raises(ValueError, match="strictly inside"):
         mirror_mpc(MirrorILQR(problem, mmap), jnp.array([-3.0, 0.0]), u0, 5)
+
+
+def test_validate_flag_and_eager_mpc_with_controls_on_the_bound():
+    """With x0 = [-30, 0] every planned control rounds onto the bound u = 1. Such shifted
+    plans are legitimate MPC warm starts, so the loop must not reject them, also when it
+    runs eagerly (where the controls are concrete and could be checked)."""
+    problem, x0 = lq_1d(), jnp.array([-30.0, 0.0])
+    solver = MirrorILQR(problem, BoxEntropy(-1.0, 1.0))
+    plan = solver.solve(x0, jnp.zeros((8, 1))).controls
+    assert bool(jnp.all(plan == 1.0))
+    with pytest.raises(ValueError, match="strictly inside"):
+        solver.solve(x0, plan)
+    assert solver.solve(x0, plan, validate=False).status == Status.CONVERGED
+
+    jitted = mirror_mpc(solver, x0, jnp.zeros((8, 1)), 3)
+    with jax.disable_jit():
+        eager = mirror_mpc(MirrorILQR(problem, BoxEntropy(-1.0, 1.0)), x0, jnp.zeros((8, 1)), 3)
+    assert jnp.all(eager.status == 0)
+    np.testing.assert_allclose(eager.states, jitted.states, rtol=1e-12)
+
+
+def test_rejects_bad_shapes():
+    solver = MirrorILQR(lq_1d(), BoxEntropy(-1.0, 1.0))
+    with pytest.raises(ValueError, match="x0"):
+        solver.solve(jnp.zeros((T + 1, 2)), jnp.zeros((T, 1)))  # old call style: states instead of x0
+    with pytest.raises(ValueError, match="controls"):
+        solver.solve(jnp.zeros(2), jnp.zeros(T))
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"tol": -1.0},
+        {"tol": float("nan")},
+        {"max_iter": -1},
+        {"max_iter": 10.5},
+        {"reg_init": 0.0},
+        {"reg_factor_init": 1.0},
+        {"reg_min": 1.0, "reg_max": 0.1},
+    ],
+)
+def test_options_are_validated(bad):
+    with pytest.raises(ValueError):
+        SolverOptions(**bad)
 
 
 def test_float32_inputs_are_promoted():

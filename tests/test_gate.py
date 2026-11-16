@@ -33,7 +33,7 @@ def test_golden_passes_its_own_gate(tmp_path):
     assert all(verdicts(golden_as_results(tmp_path), bitwise=True).values())
 
 
-def test_polytope_iterations_are_checked():
+def test_golden_polytope_iterations_were_captured():
     golden = R.load_legacy(R.CASES["polytope"], R.DEFAULT_GOLDEN)
     assert golden["ms_iterations"].sum() == 2746 and golden["ms_iterations"].max() == 34
 
@@ -46,8 +46,9 @@ def test_polytope_iterations_are_checked():
         ("polytope", "ms", lambda r: r["ms_status"].__setitem__((0, 7), 1)),
         ("cartpole-compare", "ip", lambda r: r["ip_status"].__setitem__((2, 3), 2)),
         ("polytope-compare", "ms", lambda r: r["ms_controls"].__setitem__((0, 0), r["ms_controls"][0, 0] + 1e-6)),
+        ("cartpole", "ms", lambda r: r.pop("ms_status")),
     ],
-    ids=["extra-iteration", "polytope-extra-iteration", "not-converged", "nonfinite-status", "inconsistent-control"],
+    ids=["extra-iteration", "polytope-extra-iteration", "not-converged", "nonfinite-status", "inconsistent-control", "missing-status"],
 )
 def test_gate_catches_regressions(tmp_path, case, method, mutation):
     def mutate(name, res):

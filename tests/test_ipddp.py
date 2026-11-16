@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from msilqr import DoubleIntegrator, InteriorPointDDP, IPDDPOptions, OptimalControlProblem, Status
+from msilqr import DoubleIntegrator, InteriorPointDDP, IPDDPOptions, OptimalControlProblem, Status, ipddp_mpc
 from msilqr.systems import POLYTOPE_G, POLYTOPE_H
 
 G, H = jnp.array(POLYTOPE_G), jnp.array(POLYTOPE_H)
@@ -109,3 +109,13 @@ def test_rejects_nonpositive_slacks_or_duals():
         polytope_solver().solve(x0, u0, s0.at[0, 0].set(0.0), z0)
     with pytest.raises(ValueError, match="strictly positive"):
         polytope_solver().solve(x0, u0, s0, -z0)
+    with pytest.raises(ValueError, match="strictly positive"):
+        ipddp_mpc(polytope_solver(), x0, u0, s0, z0.at[3, 1].set(0.0), 2)
+    with pytest.raises(ValueError, match="shape"):
+        polytope_solver().solve(x0, u0, s0[:-1], z0)
+
+
+@pytest.mark.parametrize("bad", [{"barrier_init": 0.0}, {"barrier_tol": -1e-6}, {"barrier_init_fallback": 0.0}, {"reg_init": -1.0}])
+def test_options_are_validated(bad):
+    with pytest.raises(ValueError):
+        IPDDPOptions(**bad)

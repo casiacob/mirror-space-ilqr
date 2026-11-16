@@ -19,6 +19,7 @@ import jax
 import jax.numpy as jnp
 
 from msilqr._common import as_float64 as _as_float64
+from msilqr._common import check_trajectory_shapes
 
 __all__ = ["MPCResult", "mirror_mpc", "ipddp_mpc"]
 
@@ -46,7 +47,7 @@ def _mirror_mpc_fn(solver, num_steps: int):
     def run(x0, u_init):
         def body(carry, _):
             state, controls = carry
-            sol = solver.solve(state, controls)
+            sol = solver.solve(state, controls, validate=False)  # shifted plans may touch the bound
             out = (sol.states[1], sol.controls[0], sol.iterations, sol.status, sol.cost)
             return (sol.states[1], _shift(sol.controls)), out
 
@@ -65,6 +66,7 @@ def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int) -> MPCR
         u_init: initial control sequence ``(T, m)``, strictly feasible (checked).
         num_steps: number of MPC steps.
     """
+    check_trajectory_shapes(x0, u_init)
     x0, u_init = _as_float64(x0), _as_float64(u_init)
     solver.validate_controls(u_init)
     fn = _cached(solver, ("mirror", int(num_steps)), lambda: _mirror_mpc_fn(solver, int(num_steps)))
@@ -99,6 +101,8 @@ def ipddp_mpc(solver, x0: jax.Array, u_init: jax.Array, slacks: jax.Array, duals
     complementarity residual is inconsistent and every second solve stalls at the
     iteration cap (observed on the double integrator).
     """
+    check_trajectory_shapes(x0, u_init, slacks, duals)
     x0, u_init, slacks, duals = (_as_float64(a) for a in (x0, u_init, slacks, duals))
+    solver.validate_slacks_duals(slacks, duals)
     fn = _cached(solver, ("ipddp", int(num_steps)), lambda: _ipddp_mpc_fn(solver, int(num_steps)))
     return fn(x0, u_init, slacks, duals)

@@ -39,7 +39,7 @@ reproduce every row:
 |---|---|---|
 | Vectorize stage derivatives over the horizon | `rounding_sensitivity.py` | `cartpole-compare` 23,470 iterations (+89), max 111 (was 102) |
 | One Cholesky factorization per stage instead of two LU solves | `rounding_sensitivity.py` | 24,422 iterations; one solve stalls at the iteration cap |
-| `vmap` the 10 MPC runs | `rounding_sensitivity.py` | 24,622 iterations, one stalled solve, and slower (4.8 s vs 3.9 s; a batched `while_loop` waits for the slowest run) |
+| `vmap` the 10 MPC runs | `rounding_sensitivity.py` | 24,622 iterations, one stalled solve, and slower (about 4.8 s vs 3.9 s; a batched `while_loop` waits for the slowest run) |
 | Damped Newton for the polytope inverse map (instead of optimistix) | `polytope_damped_newton.py` | `polytope-compare` 28,074 iterations (+1.6 %), max 45 (was 36) |
 
 The runner already compiles each closed loop once and reuses it for all initial states.

@@ -279,7 +279,9 @@ def gate(case: Case, golden: dict, new: dict, method: str) -> Verdict:
     # Every golden solve converged by construction (the original loops had no iteration
     # cap and stopped only on the tolerance), so any non-converged new solve is a regression.
     status_key = f"{method}_status"
-    if status_key in new:
+    if status_key not in new:
+        v.checks.append(("all MPC solves converged", False, f"{status_key} missing"))
+    else:
         n_bad = int(np.sum(np.asarray(new[status_key]) != 0))
         v.checks.append(("all MPC solves converged", n_bad == 0, f"{n_bad} not converged"))
     v.checks.append(("x0 identical", n["x0_matches"] and np.array_equal(new["x0"], golden["x0"]), ""))

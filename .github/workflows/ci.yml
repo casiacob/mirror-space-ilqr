@@ -5,13 +5,28 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    # Pinned ruff, so a new ruff release cannot turn CI red without a code change.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - name: Install ruff
+        run: pip install ruff==0.17.5
+      - name: Lint
+        run: |
+          ruff check .
+          ruff format --check .
+
   unit:
     # Unit tests on every supported Python with the latest compatible dependencies.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -19,10 +34,6 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install
         run: pip install -e ".[dev]"
-      - name: Lint
-        run: |
-          ruff check .
-          ruff format --check .
       - name: Unit tests
         run: pytest -m "not slow"
 
@@ -43,4 +54,6 @@ jobs:
       # XLA compiles for the host CPU, so the test regenerates the golden outputs from the
       # original code on this runner and compares the new code with them bitwise.
       - name: Regression against the original implementation
+        env:
+          MSILQR_REQUIRE_REGRESSION: "1"  # fail instead of skipping if effb14c is missing
         run: pytest -m slow

@@ -17,11 +17,14 @@ All maps act on a single control vector of shape ``(m,)`` and are pure JAX funct
 
 Floating point: in exact arithmetic ``grad psi*`` maps every ``y`` into ``int(U)``. In
 float64 the closed-form inverses saturate (``tanh`` rounds to exactly 1, ``exp``
-underflows), so the returned control can land exactly on the boundary of ``U``. Every
-map here guarantees that ``inverse`` returns a point of the closed set ``U`` and that
-``grad`` stays finite at boundary points, so no ``inf``/``NaN`` enters an iteration.
-At such a point ``Psi^{-1}`` is 0 (the control is frozen until a later warm start moves
-it); see the README.
+underflows), so the returned control can land exactly on the boundary of ``U``. The
+closed-form maps (box, positivity, Euclidean ball) guarantee that ``inverse`` returns a
+point of the closed set ``U`` for every finite ``y`` and that ``grad`` and
+``inv_hessian`` stay finite there, so no ``inf``/``NaN`` enters an iteration. At a
+boundary point ``Psi^{-1}`` is 0, so the control is frozen until a later warm start moves
+it (``docs/PAPER_NOTES.md``, note 8). The polytope map has no closed-form inverse: its
+Newton solve can fail and return ``NaN`` (the solver then rejects the step), and its
+``grad`` is infinite on the boundary.
 """
 
 from __future__ import annotations
@@ -68,6 +71,17 @@ class MirrorMap(abc.ABC):
         """Whether ``u`` lies in the interior ``int(U)`` (a boolean scalar)."""
 
 
+def _as_bound(value):
+    """Turn list/tuple bounds into float64 arrays (scalars and arrays pass through unchanged)."""
+    return np.asarray(value, dtype=np.float64) if isinstance(value, list | tuple) else value
+
+
+def _init_box(box) -> None:
+    object.__setattr__(box, "low", _as_bound(box.low))
+    object.__setattr__(box, "high", _as_bound(box.high))
+    _check_box(box.low, box.high)
+
+
 def _check_box(low, high) -> None:
     """Validate concrete box bounds (skipped for traced values)."""
     if isinstance(low, jax.core.Tracer) or isinstance(high, jax.core.Tracer):
@@ -99,7 +113,7 @@ class BoxEntropy(MirrorMap):
     Legendre function with the same constraint set but a different geometry: with the
     paper's ``lambda * I`` damping in mirror coordinates (Sec. III-C) the scale changes
     the iterates. The original cart-pole experiments used ``scale = 0.5``
-    (``y = 0.5 log(...)``, ``u = rho tanh(y)``); see the README.
+    (``y = 0.5 log(...)``, ``u = rho tanh(y)``); see ``docs/PAPER_NOTES.md``, note 1.
 
     Floating point: once ``|y| / (2 scale)`` exceeds about 19.06, ``tanh`` rounds to
     exactly 1 in float64. Then ``mu + rho * tanh(.)`` evaluates to ``mu +- rho``, which for
@@ -118,7 +132,7 @@ class BoxEntropy(MirrorMap):
     def __post_init__(self):
         if not self.scale > 0:
             raise ValueError(f"scale must be positive, got {self.scale}")
-        _check_box(self.low, self.high)
+        _init_box(self)
 
     @property
     def mu(self):
@@ -175,7 +189,7 @@ class BoxLogBarrier(MirrorMap):
     Y_CLIP = 1e300
 
     def __post_init__(self):
-        _check_box(self.low, self.high)
+        _init_box(self)
 
     @property
     def mu(self):
@@ -230,7 +244,7 @@ class Positivity(MirrorMap):
         return jnp.diag(jnp.atleast_1d(u))
 
     def contains(self, u):
-        return jnp.all(u > 0)
+        return jnp.all((u > 0) & jnp.isfinite(u))
 
 
 @dataclass(frozen=True, eq=False)
@@ -241,37 +255,53 @@ class EuclideanBall(MirrorMap):
     ``u = y / sqrt(1 + ||y||^2)``; ``Psi^{-1}(u) = s (I - u u^T)`` with
     ``s = sqrt(1 - ||u||^2)`` (Sherman-Morrison).
 
-    ``inverse`` uses the closed form for ``||y|| < 1e7``. Beyond that it computes ``||y||``
-    without overflow and caps the radius of ``u`` at ``1 - 2^-52``: in float64 the closed
-    form would round onto the sphere (``||u|| = 1``, where ``grad`` is infinite) and
-    ``y @ y`` overflows for ``||y|| > 1e154``. So ``u`` stays strictly inside the ball for
-    every finite ``y``.
+    Floating point:
+
+    * ``inverse`` uses the closed form for ``||y|| < 1e7``. Beyond that the closed form
+      would round onto the sphere (where ``grad`` is infinite), and ``y @ y`` overflows
+      for ``||y|| > 1e154``. So for large ``y`` it computes ``||y||`` without overflow and
+      caps the radius of ``u`` at ``1 - 2^-49``. A tighter cap is not safe: the rounding
+      in ``u = y * (r / ||y||)`` and in ``u @ u`` can exceed a margin of a few ulps
+      (``1 - 2^-52`` put about 5 % of large random ``y`` on or outside the sphere).
+    * Both branches of ``inverse`` are evaluated, so each is fed an input that keeps it
+      finite, with finite derivatives, when it is not selected. Otherwise reverse-mode
+      derivatives would be ``0 * inf = NaN`` at ``y = 0``.
+    * ``grad`` and ``inv_hessian`` floor ``1 - ||u||^2`` at the smallest normal float64,
+      so they stay finite even if ``u`` reaches the sphere.
     """
 
-    _R_MAX = 1.0 - 2.0**-52
+    _R_MAX = 1.0 - 2.0**-49
     _N_DIRECT = 1e7
+    _S2_MIN = float(np.finfo(np.float64).tiny)
 
-    def grad(self, u):
-        return u / jnp.sqrt(1.0 - u @ u)
-
-    def inverse(self, y, u_ref=None):
+    @staticmethod
+    def _norm(y):
+        """``||y||`` without overflow; finite derivatives for ``y != 0``."""
         m = jnp.max(jnp.abs(y))
         safe_m = jnp.where(m > 0, m, 1.0)
-        n = safe_m * jnp.sqrt(jnp.sum((y / safe_m) ** 2))  # ||y|| without overflow
-        large = n >= self._N_DIRECT
-        y_small = jnp.where(large, jnp.zeros_like(y), y)  # keeps the unused branch finite
+        return safe_m * jnp.sqrt(jnp.sum((y / safe_m) ** 2))
+
+    def _s(self, u):
+        return jnp.sqrt(jnp.maximum(1.0 - u @ u, self._S2_MIN))
+
+    def grad(self, u):
+        return u / self._s(u)
+
+    def inverse(self, y, u_ref=None):
+        large = self._norm(jax.lax.stop_gradient(y)) >= self._N_DIRECT
+        y_small = jnp.where(large, jnp.zeros_like(y), y)
         direct = y_small / jnp.sqrt(1.0 + y_small @ y_small)
+        y_large = jnp.where(large, y, jnp.full_like(y, self._N_DIRECT))
+        n = self._norm(y_large)
         r = jnp.minimum(n / jnp.hypot(1.0, n), self._R_MAX)  # ||u|| = n / sqrt(1 + n^2)
-        capped = y * (r / jnp.where(large, n, 1.0))
-        return jnp.where(large, capped, direct)
+        return jnp.where(large, y_large * (r / n), direct)
 
     def hessian(self, u):
         s = jnp.sqrt(1.0 - u @ u)
         return jnp.eye(u.shape[0]) / s + jnp.outer(u, u) / s**3
 
     def inv_hessian(self, u):
-        s = jnp.sqrt(1.0 - u @ u)
-        return s * (jnp.eye(u.shape[0]) - jnp.outer(u, u))
+        return self._s(u) * (jnp.eye(u.shape[0]) - jnp.outer(u, u))
 
     def contains(self, u):
         return u @ u < 1.0

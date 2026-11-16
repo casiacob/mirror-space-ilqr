@@ -2,7 +2,8 @@
 
 Mirror-space iLQR handles convex control constraints by solving iLQR in the mirror
 coordinates ``y = grad psi(u)`` of a Legendre-type function ``psi`` whose domain is the
-constraint set, so every iterate is strictly feasible.
+constraint set, so every iterate is feasible (strictly feasible in exact arithmetic; in
+float64 a saturated control can round onto the boundary).
 """
 
 from msilqr._common import RegularizationOptions, Status

@@ -13,18 +13,28 @@
   * the IPDDP backward pass is split into `perturbed_kkt`, `newton_gains` and
     `augmented_q`, and its forward pass uses `fraction_to_boundary`.
 * A float64 guard: in float32 the original cart-pole solve never converged.
-* All Table I maps plus the polytope map, each with `contains(u)`. The box map includes μ
-  (the original was wrong for asymmetric boxes). Every inverse returns a point of `U` even
-  when the closed form saturates in float64, and `grad` never returns `±∞`.
+* Requires Python ≥ 3.12 (as JAX 0.12 does).
+* All Table I maps plus the polytope map, behind an abstract `MirrorMap` class: a custom
+  map implements `grad`, `inverse`, `hessian`, `inv_hessian` and `contains`. The box map
+  includes μ (the original was wrong for asymmetric boxes). The closed-form inverses (box,
+  positivity, ball) return a point of `U` for every finite `y`, even when they saturate in
+  float64, with finite `grad` and `inv_hessian` there and finite reverse-mode
+  derivatives. The polytope map's Newton inverse can return NaN; the solver rejects such
+  a step.
 * `solve(x0, controls)` rejects initial controls outside `int(U)`. On the boundary
   `Ψ⁻¹ = 0` and the solver would otherwise report convergence after one iteration.
+  `validate=False` skips the check; the MPC loops use it because their shifted warm
+  starts may touch the bound. Input shapes and solver options are checked as well, and
+  `ipddp_mpc` checks slacks and duals like `InteriorPointDDP.solve`.
 * IPDDP: works on current JAX; `eigvalsh` instead of the complex `eigvals`; the feedback
   gain of state constraints uses Σ = S⁻¹Z instead of S⁻¹ (a bug that does not affect the
   benchmarks, which constrain controls only); optional `barrier_tol`, `barrier_init`, and
   a fallback when the original initial-barrier rule gives μ₀ ≤ 0 (non-positive costs).
 * MPC loops record the applied controls.
-* The regression gate also requires every MPC solve to converge and checks the polytope
-  iteration counts.
+* The regression gate also requires every MPC solve to converge (a result without status
+  fails) and checks the polytope iteration counts. In CI the regression test fails,
+  instead of skipping, when the original commit is missing, and lint runs with a pinned
+  ruff.
 * `pyproject.toml` with extras, a pinned lock file, CI, figure generation, and tests:
   * map identities;
   * Lemma 3 against autodiff;

@@ -9,6 +9,7 @@ and stop on a tolerance or an iteration cap.
 from __future__ import annotations
 
 import enum
+import operator
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -25,6 +26,7 @@ __all__ = [
     "gain_ratio_update",
     "termination_status",
     "as_float64",
+    "check_trajectory_shapes",
 ]
 
 
@@ -32,7 +34,7 @@ class Status(enum.IntEnum):
     """Termination status of a solve."""
 
     CONVERGED = 0  #: stopping measure below ``tol``
-    MAX_ITER = 1  #: iteration cap reached with a finite stopping measure
+    MAX_ITER = 1  #: iteration cap reached (stopping measure finite, or ``inf`` if no iteration ran)
     NONFINITE = 2  #: stopping measure is NaN or inf (the iterate itself is the last accepted one)
 
 
@@ -54,6 +56,22 @@ class RegularizationOptions:
     reg_factor_init: float = 2.0
     reg_min: float = 1e-16
     reg_max: float = 1e16
+
+    def __post_init__(self):
+        try:
+            max_iter_ok = operator.index(self.max_iter) >= 0
+        except TypeError:
+            max_iter_ok = False
+        checks = [
+            (self.tol >= 0, "tol must be >= 0"),
+            (max_iter_ok, "max_iter must be a non-negative integer"),
+            (self.reg_init > 0, "reg_init must be > 0"),
+            (self.reg_factor_init > 1, "reg_factor_init must be > 1 (a rejected step must increase lambda)"),
+            (0 <= self.reg_min <= self.reg_max, "need 0 <= reg_min <= reg_max"),
+        ]
+        for ok, message in checks:  # written as `ok` so NaN fails every check
+            if not ok:
+                raise ValueError(f"{message}, got {self}")
 
 
 def gain_ratio_update(reg, reg_factor, gain_ratio, accept, options: RegularizationOptions):
@@ -95,6 +113,19 @@ def termination_status(converged, err, it):
     stopping measure is NaN/inf; ``MAX_ITER`` otherwise."""
     nonfinite = jnp.logical_and(it > 0, jnp.logical_not(jnp.isfinite(err)))
     return jnp.where(converged, Status.CONVERGED, jnp.where(nonfinite, Status.NONFINITE, Status.MAX_ITER))
+
+
+def check_trajectory_shapes(x0, controls, *per_stage) -> None:
+    """Raise ``ValueError`` unless ``x0`` is ``(n,)``, ``controls`` is ``(T, m)`` and every
+    array in ``per_stage`` is ``(T, k)`` (shapes are static, so this also works under jit)."""
+    if jnp.ndim(x0) != 1:
+        raise ValueError(f"x0 must be a single state of shape (n,), got shape {jnp.shape(x0)}")
+    if jnp.ndim(controls) != 2:
+        raise ValueError(f"controls must have shape (T, m), got shape {jnp.shape(controls)}")
+    horizon = jnp.shape(controls)[0]
+    for a in per_stage:
+        if jnp.ndim(a) != 2 or jnp.shape(a)[0] != horizon:
+            raise ValueError(f"per-stage arrays must have shape ({horizon}, k), got shape {jnp.shape(a)}")
 
 
 def as_float64(a):

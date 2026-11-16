@@ -45,19 +45,23 @@ properties of the method found while testing.
    controls in `cartpole-compare`. There `Ψ⁻¹ = 0` and the control is frozen until the MPC
    shift moves it. The obvious fix is to carry `y` instead of recomputing
    `ȳ = ∇ψ(ū)` (`benchmarks/experiments/carry_mirror_controls.py`). It gives the same
-   iterations and cost on `cartpole`, but on `cartpole-compare` it needs 24,458 iterations
-   (+4.6 %) and one solve stalls at the iteration cap. Recomputing `ȳ` implicitly caps
-   `|ȳ|` at about 18, which keeps saturated controls close to the interior in `y`. The
+   iterations and cost on `cartpole`. On `cartpole-compare` it needs 24,458 iterations
+   instead of 23,381, one solve stalls at the iteration cap, and the mean closed-loop cost
+   is slightly lower (6655.00 vs 6656.78). Mathematically identical rewrites of the
+   solver move this case by as much (24,422 and 24,622 iterations, one stall each;
+   `docs/REGRESSION.md`), so the experiment shows no measurable effect either way. The
    library keeps the paper's `ȳ = ∇ψ(ū)` and only replaces `±∞` by `±40c`, which is
    bitwise neutral.
 9. **The cart-pole cost is not even C¹ at θ = 0** (the hanging start): the angle is
-   wrapped with `θ mod 2π`, so the gradient jumps by ±10π there. Sec. II assumes
+   wrapped with `θ mod 2π`, so the one-sided derivatives are ±10π and the gradient
+   jumps by 20π there. Sec. II assumes
    twice-differentiable costs.
 10. **Euclidean-ball constraints can converge slowly.** On a small 2-D LQ problem whose
     optimal controls slide along the boundary of the unit ball (`tests/test_solver.py`),
-    the solver's stopping measure falls roughly like 1/k: 5.5·10⁻⁴, 9·10⁻⁵ and 1.1·10⁻⁵
-    after 1,000, 5,000 and 20,000 iterations. When the active controls point in a fixed
-    direction it converges in 36 iterations. The paper's convergence analysis covers
+    the solver's stopping measure falls roughly like 1/k: about 4·10⁻⁴ after 1,000
+    iterations (it oscillates between 3.7·10⁻⁴ and 6.6·10⁻⁴ around there), 9.0·10⁻⁵ after
+    5,000 and 1.3·10⁻⁵ after 20,000. When the active controls point in a fixed direction
+    it converges in 36 iterations (tol 10⁻⁶; 50 at 10⁻⁹). The paper's convergence analysis covers
     boxes only; under the `λI` damping, steps along the curved boundary shrink with the
     radial `Ψ⁻¹`.
 11. **The box log-barrier map can stall at a float64 resolution limit.** In the cart-pole

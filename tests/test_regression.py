@@ -5,6 +5,9 @@ machine. By default this test therefore regenerates the golden outputs from the 
 commit (effb14c, needs the git history) on this machine and compares the new
 implementation with them. Set ``MSILQR_USE_COMMITTED_GOLDEN=1`` to compare with
 ``benchmarks/legacy/golden`` instead (valid on the machine that captured it; faster).
+
+Without the git history the test is skipped, unless ``MSILQR_REQUIRE_REGRESSION=1`` (set
+in CI), which turns the skip into a failure so the gate can never pass vacuously.
 """
 
 import os
@@ -35,7 +38,10 @@ def test_benchmarks_match_original_bitwise(tmp_path):
         golden = regression.DEFAULT_GOLDEN
     else:
         if not _has_legacy_commit():
-            pytest.skip(f"git history with {LEGACY_REF} not available (shallow clone?); set MSILQR_USE_COMMITTED_GOLDEN=1")
+            reason = f"git history with {LEGACY_REF} not available (shallow clone?); set MSILQR_USE_COMMITTED_GOLDEN=1"
+            if os.environ.get("MSILQR_REQUIRE_REGRESSION"):
+                pytest.fail(reason)
+            pytest.skip(reason)
         golden = str(tmp_path / "golden")
         capture = os.path.join(ROOT, "benchmarks", "legacy", "capture.py")
         subprocess.run([sys.executable, capture, "--ref", LEGACY_REF, "--out", golden], check=True, cwd=ROOT)

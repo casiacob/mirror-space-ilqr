@@ -30,7 +30,7 @@ method with a global convergence guarantee (Sec. IV of the paper).
 
 ## Installation
 
-Requires Python ≥ 3.11 and JAX ≥ 0.12; a CPU is enough.
+Requires Python ≥ 3.12 and JAX ≥ 0.12; a CPU is enough.
 
 ```bash
 git clone https://github.com/casiacob/mirror-space-ilqr
@@ -97,7 +97,8 @@ diamond = PolytopeLogBarrier(G, h=jnp.ones(4))
 sol = MirrorILQR(problem, diamond).solve(jnp.array([1.0, -1.0, 0.0, 0.0]), jnp.zeros((40, 2)))
 ```
 
-The initial controls must lie strictly inside the constraint set; `solve` checks this.
+The initial controls must lie strictly inside the constraint set; `solve` checks this
+(`validate=False` skips the check, as the MPC loops do for their shifted warm starts).
 
 ## Mirror maps
 
@@ -118,8 +119,10 @@ New constraint sets subclass `MirrorMap`. A subclass implements five methods: `g
 `contains(u)` (the test u ∈ int(U)).
 
 In float64 the closed-form inverses saturate (`tanh` rounds to 1, `exp` underflows), so a
-control can land exactly on the boundary of `U`. Every map returns a point of `U` and a
-finite `grad` there.
+control can land exactly on the boundary of `U`. The box, positivity and ball maps still
+return a point of `U` with a finite `grad` there; such a control stays frozen until an MPC
+warm start moves it. The polytope map's Newton inverse can fail; it then returns NaN and
+the solver rejects that step.
 
 ## API
 

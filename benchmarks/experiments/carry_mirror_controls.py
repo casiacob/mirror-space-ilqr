@@ -5,7 +5,7 @@ The paper (Sec. III-C) and the code define the nominal mirror controls as
 saturated controls (to about 18 for the half-scale cart-pole map). This script runs the
 alternative that keeps the mirror controls ``y`` produced by the forward pass (also across
 MPC warm starts) and computes ``Psi^{-1}`` from ``u = grad psi*(y)``, on ``cartpole`` and
-``cartpole-compare`` (README, note 8).
+``cartpole-compare`` (``docs/PAPER_NOTES.md``, note 8).
 
 Usage: ``python benchmarks/experiments/carry_mirror_controls.py`` (~30 s).
 """

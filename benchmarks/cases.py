@@ -14,7 +14,7 @@ polytope-compare    wiener-polytope-mm-v-ip.py (MS vs IP)       10 random  15   
 ==================  =========================================  =========  ====  =====
 
 Settings that differ from the paper's text are kept on purpose (they are what the
-golden results were produced with) and are listed in the README: the cart-pole box map
+golden results were produced with) and are listed in ``docs/PAPER_NOTES.md``: the cart-pole box map
 uses half of Table I's entropy DGF (``scale=0.5``), and the double-integrator
 comparison samples its initial states around 0 instead of the paper's ``x0``.
 """

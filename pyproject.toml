@@ -7,7 +7,7 @@ name = "msilqr"
 version = "1.0.0.dev0"
 description = "Mirror-space iLQR: dynamic programming for optimal control with convex control constraints"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"  # jax 0.12 needs Python 3.12
 authors = [
     { name = "Casian Iacob" },
     { name = "Hany Abdulsamad" },
@@ -35,7 +35,7 @@ markers = ["slow: end-to-end regression against the original implementation (~1 
 
 [tool.ruff]
 line-length = 140
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

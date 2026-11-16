@@ -25,7 +25,7 @@ so the regression benchmarks match it bitwise. Changes relative to the original:
   (default ``None``) stops on the barrier-subproblem residual alone, so it can return
   points of the central path with ``mu`` far above ``tol``.
 
-Known limitations kept for comparability with the paper (documented in the README):
+Known limitations kept for comparability with the paper (``docs/PAPER_NOTES.md``, note 4):
 the step acceptance tests only ``gain ratio > 0`` (it ignores primal infeasibility, and
 also accepts a cost increase that the model predicted), the fraction-to-boundary rule is
 applied per stage (each stage takes its own dual/slack step size), and the stopping
@@ -45,7 +45,14 @@ import jax.numpy as jnp
 import jax.scipy as jcp
 from jax import grad, hessian
 
-from msilqr._common import RegularizationOptions, as_float64, expand_stage, gain_ratio_update, termination_status
+from msilqr._common import (
+    RegularizationOptions,
+    as_float64,
+    check_trajectory_shapes,
+    expand_stage,
+    gain_ratio_update,
+    termination_status,
+)
 from msilqr._x64 import require_x64
 from msilqr.problem import OptimalControlProblem, rollout
 
@@ -57,7 +64,7 @@ class IPDDPOptions(RegularizationOptions):
     """Options of :class:`InteriorPointDDP` (defaults reproduce the paper's experiments).
 
     The stopping measure is ``max(|Qhat_u|, |r_p|, |r_d|)``; the stopping and
-    Levenberg-Marquardt fields are those of :class:`~msilqr._common.RegularizationOptions`.
+    Levenberg-Marquardt fields are those of :class:`~msilqr.RegularizationOptions`.
 
     Attributes:
         barrier_tol: if set, additionally require ``mu < barrier_tol`` to stop.
@@ -72,6 +79,13 @@ class IPDDPOptions(RegularizationOptions):
     barrier_tol: float | None = None
     barrier_init: float | None = None
     barrier_init_fallback: float = 1.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        for name in ("barrier_tol", "barrier_init", "barrier_init_fallback"):
+            value = getattr(self, name)
+            if value is not None and not value > 0:
+                raise ValueError(f"{name} must be > 0, got {value}")
 
 
 class IPDDPSolution(NamedTuple):
@@ -251,11 +265,19 @@ class InteriorPointDDP:
         strictly positive; concrete inputs are checked.
         """
         require_x64()
+        check_trajectory_shapes(x0, controls, slacks, duals)
         x0, controls, slacks, duals = (as_float64(a) for a in (x0, controls, slacks, duals))
-        if not isinstance(slacks, jax.core.Tracer) and not isinstance(duals, jax.core.Tracer):
-            if not (bool(jnp.all(slacks > 0)) and bool(jnp.all(duals > 0))):
-                raise ValueError("initial slacks and duals must be strictly positive")
+        self.validate_slacks_duals(slacks, duals)
         return self._solve_jit(x0, controls, slacks, duals)
+
+    @staticmethod
+    def validate_slacks_duals(slacks, duals) -> None:
+        """Raise ``ValueError`` unless concrete slacks and duals are strictly positive and
+        finite (no-op when traced)."""
+        if isinstance(slacks, jax.core.Tracer) or isinstance(duals, jax.core.Tracer):
+            return
+        if not all(bool(jnp.all((a > 0) & jnp.isfinite(a))) for a in (slacks, duals)):
+            raise ValueError("initial slacks and duals must be strictly positive and finite")
 
     def _initial_barrier(self, states, controls, slacks):
         opt = self.options
