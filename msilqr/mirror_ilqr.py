@@ -12,7 +12,7 @@ The constrained problem (1) is reparameterized with the mirror map ``u = grad ps
 * value recursion (13) using ``Qhat_yy`` throughout; the summed ``Delta V`` is the
   predicted cost change in the gain ratio;
 * forward rollout (14): ``y_t = ybar_t + k_t + K_t dx_t``, ``u_t = grad psi*(y_t)`` with
-  ``ybar_t = grad psi(ubar_t)``, so every iterate is strictly feasible.
+  ``ybar_t = grad psi(ubar_t)``, so every iterate is feasible.
 
 The solver stops when ``max_t |Q_y,t|`` (the mirror-space Hamiltonian gradient, evaluated
 in the backward pass of the current iterate) falls below ``tol``, or after ``max_iter``
@@ -28,15 +28,15 @@ module.
 
 from __future__ import annotations
 
-import enum
 from dataclasses import dataclass, field
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsc
-from jax import grad, hessian, jacrev
+from jax import grad, hessian
 
+from msilqr._common import RegularizationOptions, Status, as_float64, expand_stage, gain_ratio_update, termination_status
 from msilqr._x64 import require_x64
 from msilqr.mirror_maps import MirrorMap
 from msilqr.problem import OptimalControlProblem, rollout
@@ -44,39 +44,20 @@ from msilqr.problem import OptimalControlProblem, rollout
 __all__ = ["MirrorILQR", "SolverOptions", "Solution", "Status"]
 
 
-class Status(enum.IntEnum):
-    """Termination status of a solve."""
-
-    CONVERGED = 0  #: stopping measure below ``tol``
-    MAX_ITER = 1  #: iteration cap reached with a finite stopping measure
-    NONFINITE = 2  #: stopping measure is NaN or inf (the iterate itself is the last accepted one)
-
-
 @dataclass(frozen=True)
-class SolverOptions:
+class SolverOptions(RegularizationOptions):
     """Options of :class:`MirrorILQR` (defaults reproduce the paper's experiments).
 
-    Attributes:
-        tol: stop when ``max_t |Q_y,t| < tol``.
-        max_iter: iteration cap (the original code had none and could hang).
-        reg_init: initial Levenberg-Marquardt parameter ``lambda``.
-        reg_factor_init: initial increase factor ``nu`` of the gain-ratio rule.
-        reg_min, reg_max: ``lambda`` is clipped to this interval after every update.
+    The stopping measure is ``max_t |Q_y,t|``; see
+    :class:`~msilqr._common.RegularizationOptions` for the fields.
     """
-
-    tol: float = 1e-6
-    max_iter: int = 1000
-    reg_init: float = 1e-2
-    reg_factor_init: float = 2.0
-    reg_min: float = 1e-16
-    reg_max: float = 1e16
 
 
 class Solution(NamedTuple):
     """Result of :meth:`MirrorILQR.solve` (all fields are JAX arrays)."""
 
     states: jax.Array  #: ``(T+1, n)`` optimal states
-    controls: jax.Array  #: ``(T, m)`` optimal controls, strictly feasible
+    controls: jax.Array  #: ``(T, m)`` optimal controls (in ``U``)
     cost: jax.Array  #: total cost ``J`` of the returned trajectory
     iterations: jax.Array  #: number of iterations (backward + forward pass), incl. rejected ones
     reg: jax.Array  #: final Levenberg-Marquardt parameter
@@ -84,7 +65,9 @@ class Solution(NamedTuple):
     status: jax.Array  #: :class:`Status` code
 
 
-class _Derivatives(NamedTuple):
+class MirrorDerivatives(NamedTuple):
+    """Stage derivatives in mirror coordinates (Lemma 3, Gauss-Newton (12))."""
+
     cx: jax.Array
     cy: jax.Array
     fx: jax.Array
@@ -92,6 +75,54 @@ class _Derivatives(NamedTuple):
     cxx: jax.Array
     cyy: jax.Array
     cxy: jax.Array
+
+
+def mirror_derivatives(problem: OptimalControlProblem, mirror_map: MirrorMap, x, u) -> MirrorDerivatives:
+    """Stage derivatives with respect to ``(x, y)`` at ``(x, u)``, ``u = grad psi*(y)``.
+
+    Only ``Psi^{-1}(u)`` is needed: ``c_y = Psi^{-1} c_u`` (Eq. (7)), ``f_y = f_u Psi^{-1}``,
+    ``c_xy = c_xu Psi^{-1}`` (Eq. (10)), ``c_yy = Psi^{-1} c_uu Psi^{-1}`` (Eq. (12)).
+    """
+    Psi_inv = mirror_map.inv_hessian(u)
+    e = expand_stage(problem.dynamics, problem.stage_cost, x, u)
+    return MirrorDerivatives(
+        cx=e.lx,
+        cy=Psi_inv @ e.lu,
+        fx=e.fx,
+        fy=e.fu @ Psi_inv,
+        cxx=e.lxx,
+        cyy=Psi_inv @ e.luu @ Psi_inv,
+        cxy=e.lxu @ Psi_inv,
+    )
+
+
+def q_expansion(d: MirrorDerivatives, Vx, Vxx, reg):
+    """Q-function expansion in mirror coordinates (Prop. 4 with (12)) and the
+    Levenberg-Marquardt damped ``Qhat_yy = Q_yy + reg I``."""
+    Qx = d.cx + d.fx.T @ Vx
+    Qy = d.cy + d.fy.T @ Vx
+    Qxx = d.cxx + d.fx.T @ Vxx @ d.fx
+    Qyy_hat = d.cyy + d.fy.T @ Vxx @ d.fy + reg * jnp.eye(d.cy.shape[0])
+    Qxy = d.cxy + d.fx.T @ Vxx @ d.fy
+    return Qx, Qy, Qxx, Qyy_hat, Qxy
+
+
+def feedback_gains(Qy, Qyy_hat, Qxy):
+    """``k = -Qhat_yy^{-1} Q_y``, ``K = -Qhat_yy^{-1} Q_xy^T``, and whether ``Qhat_yy > 0``."""
+    positive_definite = jnp.all(jnp.linalg.eigvalsh(Qyy_hat) > 0)
+    k = -jsc.linalg.solve(Qyy_hat, Qy)
+    K = -jsc.linalg.solve(Qyy_hat, Qxy.T)
+    return k, K, positive_definite
+
+
+def value_update(Qx, Qy, Qxx, Qyy_hat, Qxy, k, K):
+    """Value recursion (13) with ``Qhat_yy`` throughout; returns ``V_x, V_xx, Delta V``."""
+    Qyx = Qxy.T
+    Vx = Qx + Qxy @ k + K.T @ Qy + K.T @ Qyy_hat @ k
+    Vxx = Qxx + K.T @ Qyy_hat @ K + K.T @ Qyx + Qxy @ K
+    Vxx = 0.5 * (Vxx + Vxx.T)
+    dV = Qy @ k + 0.5 * k.T @ Qyy_hat @ k
+    return Vx, Vxx, dV
 
 
 @dataclass(frozen=True, eq=False)
@@ -113,63 +144,25 @@ class MirrorILQR:
     def __post_init__(self):
         object.__setattr__(self, "_solve_jit", jax.jit(self._solve))
 
-    # ---------------------------------------------------------------- derivatives ---
-
-    def _derivatives(self, x, u) -> _Derivatives:
-        """Stage derivatives in mirror coordinates at ``(x, u)``, Gauss-Newton (12)."""
-        p, mmap = self.problem, self.mirror_map
-        Psi_inv = mmap.inv_hessian(u)
-
-        cx = grad(p.stage_cost, 0)(x, u)
-        cu = grad(p.stage_cost, 1)(x, u)
-        cxx = hessian(p.stage_cost, 0)(x, u)
-        cuu = hessian(p.stage_cost, 1)(x, u)
-        cxu = jacrev(jacrev(p.stage_cost, 0), 1)(x, u)
-        fx = jacrev(p.dynamics, 0)(x, u)
-        fu = jacrev(p.dynamics, 1)(x, u)
-
-        cy = Psi_inv @ cu  # Eq. (9) / (7)
-        fy = fu @ Psi_inv  # chain rule through u = grad psi*(y)
-        cxy = cxu @ Psi_inv  # Eq. (10)
-        cyy = Psi_inv @ cuu @ Psi_inv  # Eq. (12), third-order term dropped
-        return _Derivatives(cx, cy, fx, fy, cxx, cyy, cxy)
-
     # -------------------------------------------------------------- backward pass ---
 
     def backward_pass(self, states, controls, reg):
-        """Value recursion (13) with ``Qhat_yy = Q_yy + reg * I``.
+        """Backward pass in mirror coordinates with ``Qhat_yy = Q_yy + reg * I``.
 
         Returns ``(K, k, dV, positive_definite, error)``: feedback and feedforward gains
         in mirror coordinates, the predicted cost change ``sum_t Delta V_t``, whether
         every ``Qhat_yy,t`` was positive definite, and ``max_t |Q_y,t|``.
         """
         p = self.problem
-        x_final = states[-1]
-        Vx_final = grad(p.final_cost, 0)(x_final)
-        Vxx_final = hessian(p.final_cost, 0)(x_final)
+        Vx_final = grad(p.final_cost, 0)(states[-1])
+        Vxx_final = hessian(p.final_cost, 0)(states[-1])
 
         def step(carry, inp):
             Vx, Vxx = carry
-            x, u = inp
-            d = self._derivatives(x, u)
-
-            Qx = d.cx + d.fx.T @ Vx
-            Qy = d.cy + d.fy.T @ Vx
-
-            Qxx = d.cxx + d.fx.T @ Vxx @ d.fx
-            Qyy = d.cyy + d.fy.T @ Vxx @ d.fy + reg * jnp.eye(u.shape[0])
-            Qxy = d.cxy + d.fx.T @ Vxx @ d.fy
-            Qyx = Qxy.T
-
-            positive_definite = jnp.all(jnp.linalg.eigvalsh(Qyy) > 0)
-
-            k = -jsc.linalg.solve(Qyy, Qy)
-            K = -jsc.linalg.solve(Qyy, Qyx)
-
-            Vx = Qx + Qxy @ k + K.T @ Qy + K.T @ Qyy @ k
-            Vxx = Qxx + K.T @ Qyy @ K + K.T @ Qyx + Qxy @ K
-            Vxx = 0.5 * (Vxx + Vxx.T)
-            dV = Qy @ k + 0.5 * k.T @ Qyy @ k
+            d = mirror_derivatives(p, self.mirror_map, *inp)
+            Qx, Qy, Qxx, Qyy_hat, Qxy = q_expansion(d, Vx, Vxx, reg)
+            k, K, positive_definite = feedback_gains(Qy, Qyy_hat, Qxy)
+            Vx, Vxx, dV = value_update(Qx, Qy, Qxx, Qyy_hat, Qxy, k, K)
             return (Vx, Vxx), (K, k, dV, positive_definite, Qy)
 
         _, (K, k, dV, positive_definite, Qy) = jax.lax.scan(step, (Vx_final, Vxx_final), (states[:-1], controls), reverse=True)
@@ -206,7 +199,7 @@ class MirrorILQR:
         bound).
         """
         require_x64()
-        x0, controls = _as_float64(x0), _as_float64(controls)
+        x0, controls = as_float64(x0), as_float64(controls)
         self.validate_controls(controls)
         return self._solve_jit(x0, controls)
 
@@ -226,58 +219,26 @@ class MirrorILQR:
         total_cost = self.problem.total_cost
         states = rollout(self.problem.dynamics, x0, controls)
 
-        def cond(carry):
+        def keep_going(carry):
             *_, it, err = carry
-            not_converged = jnp.logical_not(err < opt.tol)
-            return jnp.logical_and(not_converged, it < opt.max_iter)
+            return jnp.logical_and(jnp.logical_not(err < opt.tol), it < opt.max_iter)
 
-        def body(carry):
+        def iteration(carry):
             states, controls, reg, reg_factor, cost, it, _ = carry
-
-            K, k, predicted, feasible, err = self.backward_pass(states, controls, reg)
+            K, k, predicted, positive_definite, err = self.backward_pass(states, controls, reg)
             new_states, new_controls = self.forward_pass(states, controls, K, k)
             new_cost = total_cost(new_states, new_controls)
 
             actual = new_cost - cost
             gain_ratio = actual / predicted
-            accept = jnp.logical_and(jnp.logical_and(actual < 0.0, predicted < 0.0), feasible)
-
-            # Madsen-Nielsen-Tingleff gain-ratio rule ([37], Eq. 2.21)
-            reg_new = jnp.where(
-                accept,
-                reg * jnp.maximum(1.0 / 3.0, 1.0 - (2.0 * gain_ratio - 1.0) ** 3),
-                reg * reg_factor,
-            )
-            reg_factor_new = jnp.where(accept, 2.0, 2.0 * reg_factor)
-            reg_new = jnp.clip(reg_new, opt.reg_min, opt.reg_max)
+            accept = jnp.logical_and(jnp.logical_and(actual < 0.0, predicted < 0.0), positive_definite)
+            reg, reg_factor = gain_ratio_update(reg, reg_factor, gain_ratio, accept, opt)
 
             states = jnp.where(accept, new_states, states)
             controls = jnp.where(accept, new_controls, controls)
             cost = jnp.where(accept, new_cost, cost)
-            return states, controls, reg_new, reg_factor_new, cost, it + 1, err
+            return states, controls, reg, reg_factor, cost, it + 1, err
 
-        init = (
-            states,
-            controls,
-            jnp.array(opt.reg_init),
-            jnp.array(opt.reg_factor_init),
-            total_cost(states, controls),
-            0,
-            1e10,
-        )
-        states, controls, reg, _, cost, it, err = jax.lax.while_loop(cond, body, init)
+        init = (states, controls, jnp.array(opt.reg_init), jnp.array(opt.reg_factor_init), total_cost(states, controls), 0, 1e10)
+        states, controls, reg, _, cost, it, err = jax.lax.while_loop(keep_going, iteration, init)
         return Solution(states, controls, cost, it, reg, err, termination_status(err < opt.tol, err, it))
-
-
-def termination_status(converged, err, it):
-    """``CONVERGED`` if ``converged``; ``NONFINITE`` if at least one iteration ran and the
-    stopping measure is NaN/inf; ``MAX_ITER`` otherwise."""
-    nonfinite = jnp.logical_and(it > 0, jnp.logical_not(jnp.isfinite(err)))
-    return jnp.where(converged, Status.CONVERGED, jnp.where(nonfinite, Status.NONFINITE, Status.MAX_ITER))
-
-
-def _as_float64(a):
-    """Cast concrete inputs to float64 (traced values are left untouched)."""
-    if isinstance(a, jax.core.Tracer):
-        return a
-    return jnp.asarray(a, dtype=jnp.float64)

@@ -22,7 +22,7 @@ import numpy as np
 
 from cases import CASES, cartpole_ms_solver
 from msilqr import MirrorILQR, Solution
-from msilqr.mirror_ilqr import termination_status
+from msilqr._common import termination_status
 from msilqr.problem import rollout
 
 

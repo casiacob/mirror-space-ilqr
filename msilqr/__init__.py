@@ -5,8 +5,9 @@ coordinates ``y = grad psi(u)`` of a Legendre-type function ``psi`` whose domain
 constraint set, so every iterate is strictly feasible.
 """
 
+from msilqr._common import RegularizationOptions, Status
 from msilqr.ipddp import InteriorPointDDP, IPDDPOptions, IPDDPSolution
-from msilqr.mirror_ilqr import MirrorILQR, Solution, SolverOptions, Status
+from msilqr.mirror_ilqr import MirrorILQR, Solution, SolverOptions
 from msilqr.mirror_maps import (
     BoxEntropy,
     BoxLogBarrier,
@@ -36,6 +37,7 @@ __all__ = [
     "OptimalControlProblem",
     "PolytopeLogBarrier",
     "Positivity",
+    "RegularizationOptions",
     "Solution",
     "SolverOptions",
     "Status",

@@ -14,8 +14,8 @@ authors = [
     { name = "Simo Särkkä" },
 ]
 dependencies = [
-    "jax>=0.4.30",
-    "numpy>=1.24",
+    "jax>=0.12",  # tested with 0.12.0.1 (requirements-lock.txt)
+    "numpy>=2.0",
 ]
 
 [project.optional-dependencies]

@@ -16,7 +16,9 @@ regression harness that pins the results to the original implementation.
 
 ## Installation
 
-Requires Python ≥ 3.11 and JAX (CPU is enough).
+Requires Python ≥ 3.11 and JAX ≥ 0.12 (CPU is enough). Developed and regression-tested with
+Python 3.14 and JAX 0.12.0.1 (`requirements-lock.txt`); CI runs the unit tests on Python
+3.11-3.14.
 
 ```bash
 pip install -e ".[benchmarks]"      # library + optimistix (polytope map) + matplotlib
@@ -215,6 +217,13 @@ flags shown.
     direction it converges in 36 iterations. The paper's convergence analysis covers
     boxes only; under the `λI` damping, steps along the curved boundary shrink with the
     radial `Ψ⁻¹`.
+11. **The box log-barrier map can stall at a float64 resolution limit.** In the cart-pole
+    MPC with `BoxLogBarrier(-50, 50)`, 15 of the 400 solves end at the iteration cap, even
+    with a cap of 5,000; the closed loop itself is fine. In such a solve the stopping
+    measure is just above the tolerance (1.7·10⁻⁶), but the best model step would lower a
+    cost of about 10³ by only 4·10⁻¹⁴, below float64 resolution. No step registers as a
+    strict decrease, every step is rejected, and λ climbs to its cap. The original code
+    would loop forever here; the iteration cap ends it with `MAX_ITER`.
 
 ## Changes relative to the original code
 
@@ -223,6 +232,13 @@ flags shown.
   by `msilqr/systems.py` and `benchmarks/cases.py`.
 * Both solvers have an iteration cap and a convergence status; the original loops could
   run forever.
+* Solver internals restructured without changing their arithmetic (verified bitwise):
+  * `msilqr/_common.py` holds what both solvers share (status, stopping and
+    regularization options, the gain-ratio update, the stage expansion);
+  * the mirror-space backward pass is split into `mirror_derivatives`, `q_expansion`,
+    `feedback_gains` and `value_update`, mapped to Lemma 3, Prop. 4, Eq. (12) and Eq. (13);
+  * the IPDDP backward pass is split into `perturbed_kkt`, `newton_gains` and
+    `augmented_q`, and its forward pass uses `fraction_to_boundary`.
 * A float64 guard: in float32 the original cart-pole solve never converged.
 * All Table I maps plus the polytope map, each with `contains(u)`. The box map includes μ
   (the original was wrong for asymmetric boxes). Every inverse returns a point of `U` even

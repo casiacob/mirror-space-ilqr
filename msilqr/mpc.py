@@ -18,7 +18,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from msilqr.mirror_ilqr import _as_float64
+from msilqr._common import as_float64 as _as_float64
 
 __all__ = ["MPCResult", "mirror_mpc", "ipddp_mpc"]
 

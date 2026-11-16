@@ -25,6 +25,7 @@ from jax import grad, hessian
 
 from cases import CASES, cartpole_ms_solver
 from msilqr import MirrorILQR
+from msilqr.mirror_ilqr import mirror_derivatives
 from msilqr.mpc import _mirror_mpc_fn
 
 
@@ -37,11 +38,12 @@ class VariantILQR(MirrorILQR):
         p = self.problem
         Vx_final = grad(p.final_cost, 0)(states[-1])
         Vxx_final = hessian(p.final_cost, 0)(states[-1])
-        derivs = jax.vmap(self._derivatives)(states[:-1], controls) if self.vmap_derivatives else None
+        expand = lambda x, u: mirror_derivatives(p, self.mirror_map, x, u)  # noqa: E731
+        derivs = jax.vmap(expand)(states[:-1], controls) if self.vmap_derivatives else None
 
         def step(carry, inp):
             Vx, Vxx = carry
-            d = inp if self.vmap_derivatives else self._derivatives(*inp)
+            d = inp if self.vmap_derivatives else expand(*inp)
             m = d.cy.shape[0]
             Qx = d.cx + d.fx.T @ Vx
             Qy = d.cy + d.fy.T @ Vx
