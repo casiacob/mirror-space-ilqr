@@ -45,7 +45,7 @@
   * the bitwise regression.
 
 * MIT license (Casian Iacob and Hany Abdulsamad), a citation block and a user-facing README;
-  author-facing material lives in `docs/` (this file, `PAPER_NOTES.md`, `REGRESSION.md`,
+  background material lives in `docs/` (this file, `PAPER_NOTES.md`, `REGRESSION.md`,
   `AUDIT.md`).
 
 Every change is bitwise-neutral on the four benchmarks.
