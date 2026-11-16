@@ -1,0 +1,225 @@
+{
+  "script": "examples/wiener-polytope-mm-v-ip.py",
+  "legacy_ref": "effb14c",
+  "wall_time_s_incl_compile": 9.957,
+  "python": "3.14.10",
+  "jax": "0.12.0.1",
+  "numpy": "2.5.5",
+  "machine": "x86_64",
+  "compat_shims": [
+    "jnp.clip(a_min=, a_max=) -> jnp.clip(min=, max=)"
+  ],
+  "arrays": {
+    "A_control": {
+      "shape": [
+        8,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "all_ip_mpc_controls": {
+      "shape": [
+        10,
+        300,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "all_ip_mpc_iterations": {
+      "shape": [
+        10,
+        300
+      ],
+      "dtype": "int64"
+    },
+    "all_ip_mpc_iterations_ma": {
+      "shape": [
+        10,
+        300
+      ],
+      "dtype": "float64"
+    },
+    "all_ip_mpc_states": {
+      "shape": [
+        10,
+        301,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "all_mm_mpc_controls": {
+      "shape": [
+        10,
+        300,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "all_mm_mpc_iterations": {
+      "shape": [
+        10,
+        300
+      ],
+      "dtype": "int64"
+    },
+    "all_mm_mpc_iterations_ma": {
+      "shape": [
+        10,
+        300
+      ],
+      "dtype": "float64"
+    },
+    "all_mm_mpc_states": {
+      "shape": [
+        10,
+        301,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "all_states": {
+      "shape": [
+        300,
+        16,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "b_control": {
+      "shape": [
+        8
+      ],
+      "dtype": "float64"
+    },
+    "ip_mpc_controls": {
+      "shape": [
+        300,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "ip_mpc_iterations": {
+      "shape": [
+        300
+      ],
+      "dtype": "int64"
+    },
+    "ip_mpc_states": {
+      "shape": [
+        301,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "key": {
+      "shape": [
+        2
+      ],
+      "dtype": "uint32"
+    },
+    "mean_ip_mpc_iterations_ma": {
+      "shape": [
+        300
+      ],
+      "dtype": "float64"
+    },
+    "mean_mm_mpc_iterations_ma": {
+      "shape": [
+        300
+      ],
+      "dtype": "float64"
+    },
+    "mm_mpc_controls": {
+      "shape": [
+        300,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "mm_mpc_iterations": {
+      "shape": [
+        300
+      ],
+      "dtype": "int64"
+    },
+    "mm_mpc_states": {
+      "shape": [
+        301,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "s": {
+      "shape": [
+        15,
+        8
+      ],
+      "dtype": "float64"
+    },
+    "time_ma": {
+      "shape": [
+        300
+      ],
+      "dtype": "int64"
+    },
+    "u_init": {
+      "shape": [
+        15,
+        2
+      ],
+      "dtype": "float64"
+    },
+    "u_key": {
+      "shape": [
+        2
+      ],
+      "dtype": "uint32"
+    },
+    "x0": {
+      "shape": [
+        4
+      ],
+      "dtype": "float64"
+    },
+    "x0_key": {
+      "shape": [
+        2
+      ],
+      "dtype": "uint32"
+    },
+    "x0_mean": {
+      "shape": [
+        4
+      ],
+      "dtype": "float64"
+    },
+    "x0_samples": {
+      "shape": [
+        10,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "x0_std": {
+      "shape": [
+        4
+      ],
+      "dtype": "float64"
+    },
+    "x_init": {
+      "shape": [
+        16,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "z": {
+      "shape": [
+        15,
+        8
+      ],
+      "dtype": "float64"
+    }
+  },
+  "optimistix": "0.1.0"
+}

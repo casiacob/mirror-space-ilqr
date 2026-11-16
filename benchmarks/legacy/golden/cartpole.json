@@ -1,0 +1,67 @@
+{
+  "script": "examples/cartpole.py",
+  "legacy_ref": "effb14c",
+  "wall_time_s_incl_compile": 0.935,
+  "python": "3.14.10",
+  "jax": "0.12.0.1",
+  "numpy": "2.5.5",
+  "machine": "x86_64",
+  "compat_shims": [
+    "jnp.clip(a_min=, a_max=) -> jnp.clip(min=, max=)"
+  ],
+  "arrays": {
+    "key": {
+      "shape": [
+        2
+      ],
+      "dtype": "uint32"
+    },
+    "mm_mpc_controls": {
+      "shape": [
+        400,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "mm_mpc_states": {
+      "shape": [
+        401,
+        4
+      ],
+      "dtype": "float64"
+    },
+    "mpc_iterations": {
+      "shape": [
+        400
+      ],
+      "dtype": "int64"
+    },
+    "mpc_traj_costs": {
+      "shape": [
+        400
+      ],
+      "dtype": "float64"
+    },
+    "u_init": {
+      "shape": [
+        100,
+        1
+      ],
+      "dtype": "float64"
+    },
+    "x0": {
+      "shape": [
+        4
+      ],
+      "dtype": "float64"
+    },
+    "x_init": {
+      "shape": [
+        101,
+        4
+      ],
+      "dtype": "float64"
+    }
+  },
+  "optimistix": "0.1.0"
+}
