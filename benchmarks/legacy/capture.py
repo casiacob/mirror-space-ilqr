@@ -62,6 +62,30 @@ def _install_compat_shims() -> None:
     jnp.clip = clip_compat
 
 
+def _instrumented_polytope_iterations(ns: dict, arrays: dict):
+    """Re-run examples/wiener-polytope.py's MPC loop with the original functions, recording
+    the solver iterations per MPC step (the script itself does not keep them)."""
+    import jax
+    import jax.numpy as jnp
+    import numpy as np
+
+    solve, ocp, rollout = ns["solve_mirror_ilqr"], ns["wiener_ocp"], ns["rollout_dynamics"]
+
+    def body(carry, inp):
+        nominal_states, nominal_controls = carry
+        optimal_states, optimal_controls, _, _, iterations = solve(nominal_states, nominal_controls, ocp)
+        new_controls = jnp.vstack((optimal_controls[1:], optimal_controls[-1]))
+        new_states = rollout(ocp.dynamics, new_controls, optimal_states[1])
+        return (new_states, new_controls), (optimal_states[1], optimal_controls[0], iterations)
+
+    steps = arrays["mm_mpc_controls"].shape[0]
+    _, (xs, us, its) = jax.lax.scan(body, (ns["x_init"], ns["u_init"]), xs=None, length=steps)
+    xs = np.vstack((np.asarray(ns["x0"]), np.asarray(xs)))
+    if not (np.array_equal(xs, arrays["mm_mpc_states"]) and np.array_equal(np.asarray(us), arrays["mm_mpc_controls"])):
+        raise RuntimeError("instrumented re-run of wiener-polytope.py does not reproduce the script's closed loop")
+    return np.asarray(its)
+
+
 def _run_one(legacy_root: str, script: str, out_prefix: str, ref: str) -> None:
     """Child-process entry point: execute one legacy script and save its arrays."""
     import runpy
@@ -95,6 +119,15 @@ def _run_one(legacy_root: str, script: str, out_prefix: str, ref: str) -> None:
             if len({np.shape(v) for v in value}) == 1:
                 arrays[name] = np.stack([np.asarray(v) for v in value])
 
+    instrumented = []
+    if script == "wiener-polytope.py":
+        arrays["mpc_iterations_instrumented"] = _instrumented_polytope_iterations(namespace, arrays)
+        instrumented.append(
+            "mpc_iterations_instrumented: the script does not record solver iterations, so its MPC loop is re-run "
+            "with the original functions and inputs, recording them; the re-run reproduces the script's closed-loop "
+            "states and controls bitwise (checked)"
+        )
+
     np.savez(out_prefix + ".npz", **arrays)
 
     meta = {
@@ -106,6 +139,7 @@ def _run_one(legacy_root: str, script: str, out_prefix: str, ref: str) -> None:
         "numpy": np.__version__,
         "machine": platform.machine(),
         "compat_shims": COMPAT_SHIMS,
+        "instrumented": instrumented,
         "arrays": {k: {"shape": list(v.shape), "dtype": str(v.dtype)} for k, v in sorted(arrays.items())},
     }
     try:

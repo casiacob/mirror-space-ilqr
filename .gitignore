@@ -457,3 +457,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+# benchmark outputs (python benchmarks/run.py --out results; figures.py --out figures)
+/results/
+/figures/

@@ -24,7 +24,7 @@ x0 = jnp.array([-0.01, 0.01, -0.01, 0.01])
 u0 = 0.1 * jax.random.normal(jax.random.PRNGKey(0), (100, 1))  # strictly feasible guess
 
 # One open-loop solve over a 1 s horizon.
-sol = solver.solve(problem.rollout(x0, u0), u0)
+sol = solver.solve(x0, u0)
 print(f"open loop: {Status(int(sol.status)).name} after {int(sol.iterations)} iterations, cost {float(sol.cost):.3f}")
 print(f"           max |u| = {float(jnp.abs(sol.controls).max()):.3f} (bound 50)")
 

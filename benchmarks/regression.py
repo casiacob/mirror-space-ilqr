@@ -12,7 +12,8 @@ Every case is stored as ``<results_dir>/<case>.npz`` with these arrays
     x0                (N, nx)        initial states
     ms_states         (N, T+1, nx)   closed-loop states of the mirror-space solver, x0 first
     ms_controls       (N, T, nu)     applied controls
-    ms_iterations     (N, T)         solver iterations per MPC step   (optional for 'polytope')
+    ms_iterations     (N, T)         solver iterations per MPC step
+    ms_status         (N, T)         solver status per MPC step (0 = converged; optional)
     ip_states / ip_controls / ip_iterations   same for the interior-point baseline (compare cases)
 
 Cases: ``cartpole`` (examples/cartpole.py), ``cartpole-compare``
@@ -23,6 +24,7 @@ Gate (per case and method, aggregated over initial conditions)
 --------------------------------------------------------------
 * no NaN/inf in states or controls;
 * closed-loop trajectories are consistent with the dynamics (|x_{t+1} - f(x_t,u_t)| small);
+* every MPC solve converged (if statuses are reported);
 * total and maximum iterations per MPC step do not increase;
 * mean closed-loop cost does not increase beyond a relative float tolerance;
 * constraint satisfaction does not get worse (mirror-space must stay feasible);
@@ -135,7 +137,6 @@ class Case:
     violation: callable
     applied_controls: callable = None
     methods: tuple = ("ms",)
-    has_ms_iterations: bool = True
 
 
 CASES = {
@@ -160,7 +161,6 @@ CASES = {
             _double_integrator_goal_error,
             _polytope_violation,
             _double_integrator_applied_controls,
-            has_ms_iterations=False,
         ),
         Case(
             "polytope-compare",
@@ -201,6 +201,8 @@ def load_legacy(case: Case, golden_dir: str) -> dict[str, np.ndarray]:
         out["x0"] = d["x0"][None]
         out["ms_states"] = d["mm_mpc_states"][None]
         out["ms_controls"] = d["mm_mpc_controls"][None]
+        if "mpc_iterations_instrumented" in d.files:  # see benchmarks/legacy/capture.py
+            out["ms_iterations"] = d["mpc_iterations_instrumented"][None]
     else:
         x0 = d["x0_samples"]
         out["x0"] = x0
@@ -248,7 +250,7 @@ def metrics(case: Case, res: dict[str, np.ndarray], method: str) -> dict:
         "goal_error_mean": float(case.goal_error(xs).mean()),
     }
     key = f"{method}_iterations"
-    if key in res and (method != "ms" or case.has_ms_iterations):
+    if key in res:
         it = np.asarray(res[key])
         m.update(iters_total=int(it.sum()), iters_max=int(it.max()), iters_mean=float(it.mean()))
     return m
@@ -274,6 +276,12 @@ def gate(case: Case, golden: dict, new: dict, method: str) -> Verdict:
     g, n = metrics(case, golden, method), metrics(case, new, method)
     v = Verdict(case.name, method)
     v.checks.append(("finite", n["finite"], ""))
+    # Every golden solve converged by construction (the original loops had no iteration
+    # cap and stopped only on the tolerance), so any non-converged new solve is a regression.
+    status_key = f"{method}_status"
+    if status_key in new:
+        n_bad = int(np.sum(np.asarray(new[status_key]) != 0))
+        v.checks.append(("all MPC solves converged", n_bad == 0, f"{n_bad} not converged"))
     v.checks.append(("x0 identical", n["x0_matches"] and np.array_equal(new["x0"], golden["x0"]), ""))
     v.checks.append(("dynamics consistent", n["dynamics_residual"] <= DYN_ATOL, f"{n['dynamics_residual']:.1e}"))
     if "iters_total" in g:

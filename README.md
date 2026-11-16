@@ -44,7 +44,7 @@ solver = MirrorILQR(problem, BoxEntropy(-50.0, 50.0))  # |u| <= 50 via Table I's
 
 x0 = jnp.array([-0.01, 0.01, -0.01, 0.01])
 u0 = 0.1 * jax.random.normal(jax.random.PRNGKey(0), (100, 1))
-sol = solver.solve(problem.rollout(x0, u0), u0)  # one finite-horizon solve
+sol = solver.solve(x0, u0)  # one finite-horizon solve
 print(sol.status, sol.iterations, sol.cost)
 
 res = mirror_mpc(solver, x0, u0, num_steps=400)  # receding-horizon closed loop
@@ -57,8 +57,8 @@ See [`examples/quickstart.py`](examples/quickstart.py).
 | Object | What it is |
 |---|---|
 | `OptimalControlProblem(dynamics, stage_cost, final_cost)` | Problem (1) without the control constraint; `.total_cost`, `.rollout` |
-| `MirrorMap` | Interface: `grad(u)` = ∇ψ, `inverse(y, u_ref)` = ∇ψ*, `inv_hessian(u)` = Ψ⁻¹, `hessian(u)` = Ψ |
-| `MirrorILQR(problem, mirror_map, SolverOptions())` | The paper's method; `.solve(states, controls) -> Solution` |
+| `MirrorMap` | Interface: `grad(u)` = ∇ψ, `inverse(y, u_ref)` = ∇ψ*, `inv_hessian(u)` = Ψ⁻¹, `hessian(u)` = Ψ, `contains(u)` = u ∈ int(U) |
+| `MirrorILQR(problem, mirror_map, SolverOptions())` | The paper's method; `.solve(x0, controls) -> Solution`. The initial controls must be strictly inside `U` (checked) |
 | `SolverOptions` | `tol=1e-6`, `max_iter=1000`, `reg_init=1e-2` (λ₀), `reg_factor_init=2`, λ clip `[1e-16, 1e16]` |
 | `Solution` | `states, controls, cost, iterations, reg, error, status` |
 | `Status` | `CONVERGED`, `MAX_ITER`, `NONFINITE` |
@@ -77,6 +77,12 @@ See [`examples/quickstart.py`](examples/quickstart.py).
 | `PolytopeLogBarrier(G, h)` | Gu < h | ½uᵀu − Σ log(h−Gu)ⱼ | u + Gᵀ(1/s) | Newton root finding |
 
 μ = (a+b)/2, ρ = (b−a)/2, s = h − Gu. `scale = c = 1` is exactly Table I.
+
+In exact arithmetic every inverse lands in `int(U)`. In float64 the closed forms saturate
+(`tanh` rounds to 1, `exp` underflows), so every map guarantees that `inverse` returns a
+point of the closed set `U` and that `grad` stays finite there. Without that guard, an
+asymmetric box such as (−50, 49.9) produced controls one rounding error outside the box.
+The ball and positivity inverses cannot leave `int(U)` for any finite `y`.
 
 ### The algorithm, equation by equation
 
@@ -113,7 +119,8 @@ Results (identical to the original implementation, commit `effb14c`):
 | `polytope` | 2,746 (9.2, 34) | – | 606.5 / – |
 | `polytope-compare` | 27,642 (9.2, 36) | 52,745 (17.6, 38) | 701.0 / 698.2 |
 
-The mirror-space method needs 2–3× fewer iterations per MPC step. Its closed-loop cost is
+The mirror-space method needs 1.9× (double integrator) and 3.2× (cart-pole) fewer
+iterations per MPC step. Its closed-loop cost is
 higher than the interior-point baseline's (+9.2 % on the cart-pole, +0.4 % on the double
 integrator).
 
@@ -124,23 +131,29 @@ everything around it. Three pieces enforce that:
 
 * `benchmarks/legacy/capture.py` exports the original commit with `git archive`, runs its
   four example scripts unmodified and stores every array they produce in
-  `benchmarks/legacy/golden/`.
+  `benchmarks/legacy/golden/`. `wiener-polytope.py` does not keep its iteration counts, so
+  the tool re-runs that script's MPC loop with the original functions to record them. The
+  re-run is first checked to reproduce the script's closed loop bitwise.
 * `benchmarks/regression.py` re-implements the experiments' dynamics, costs and constraints
-  in plain NumPy (independent of `msilqr`). Per case and method it checks closed-loop
-  consistency with the dynamics, total and maximum iterations per MPC step, closed-loop
-  cost, constraint satisfaction and goal error against the golden run; `--bitwise` also
-  requires exact equality.
-* `tests/test_regression.py` runs both (`pytest -m slow`).
+  in plain NumPy (independent of `msilqr`). Per case and method it checks that every MPC
+  solve converged, closed-loop consistency with the dynamics, total and maximum iterations
+  per MPC step, closed-loop cost, constraint satisfaction and goal error against the
+  golden run. `--bitwise` also requires exact equality.
+* `tests/test_regression.py` runs both (`pytest -m slow`); `tests/test_gate.py` checks
+  that the gate catches damaged results.
 
 **Why bitwise?** The MPC closed loops, the cart-pole especially, are chaotically
 sensitive to rounding. Mathematically identical rewrites (a Cholesky solve instead of LU,
-derivatives vmapped over the horizon) change iteration counts by hundreds, and one even
-leaves a solve stalled. Only exact equality shows that a refactor changed nothing.
+derivatives vmapped over the horizon) change `cartpole-compare` from 23,381 to 23,470
+or 24,422 iterations, and the Cholesky variant leaves one solve stalled at the iteration
+cap. Only exact equality shows that a refactor changed nothing.
 
-XLA compiles for the host CPU, so golden outputs captured on another machine can differ in
-the last bits. Regenerate them locally with `MSILQR_RECAPTURE_GOLDEN=1 pytest -m slow`, or
-`python benchmarks/legacy/capture.py --out <dir>` followed by
-`regression.py --golden <dir>`. CI does this on every run.
+XLA compiles for the host CPU, so outputs are only comparable bit for bit on the same
+machine. `pytest -m slow` therefore regenerates the golden outputs from `effb14c` on the
+current machine before comparing (it needs the git history; CI does the same).
+`MSILQR_USE_COMMITTED_GOLDEN=1` compares with the committed files instead, which is faster
+and valid on the machine that captured them. By hand:
+`python benchmarks/legacy/capture.py --out <dir>`, then `regression.py --golden <dir>`.
 
 ## Notes for the authors: paper vs. code
 
@@ -163,7 +176,7 @@ flags shown.
    subproblem's residual is below `tol`, without driving the barrier parameter μ to `tol`.
    It returns central-path points, and its iteration counts in Fig. 4 are understated.
    With `--ip-barrier-tol 1e-6`: `cartpole-compare` IP 88,565 iterations (+19.5 %),
-   `polytope-compare` IP 60,641 (+15 %, with one solve stalled at the 1,000-iteration cap).
+   `polytope-compare` IP 60,641 (+15 %, with two solves stalled at the 1,000-iteration cap).
 3. **"The same tolerance" is not the same accuracy.** MS stops on `max|Q_y|` in mirror
    coordinates. That quantity is `Ψ⁻¹Q_u`, so it vanishes at saturated controls whatever the
    sign of the control-space gradient. IP stops on `max(|Q_u|, |r_p|, |r_d|)`.
@@ -185,13 +198,23 @@ flags shown.
 8. **"Strictly feasible" holds in exact arithmetic only.** In float64, `tanh` rounds to 1
    for `|y|/2c ≳ 19`, so controls land exactly on the bound: 290 of the 4,000 applied
    controls in `cartpole-compare`. There `Ψ⁻¹ = 0` and the control is frozen until the MPC
-   shift moves it. The obvious fix, carrying `y` instead of recomputing `ȳ = ∇ψ(ū)`, is
-   much **worse** with Euclidean damping: +40 % iterations and +28 % cost on the
-   cart-pole. Recomputing `ȳ` implicitly caps `|ȳ|` at about 18, which keeps saturated
-   controls close to the interior in `y`. The library keeps the paper's `ȳ = ∇ψ(ū)` and
-   only replaces `±∞` by `±40c`, which is bitwise neutral.
-9. **The cart-pole cost is not C² at θ = 0** (the hanging start), because the angle is
-   wrapped with `θ mod 2π`. Sec. II assumes twice-differentiable costs.
+   shift moves it. The obvious fix is to carry `y` instead of recomputing
+   `ȳ = ∇ψ(ū)` (`benchmarks/experiments/carry_mirror_controls.py`). It gives the same
+   iterations and cost on `cartpole`, but on `cartpole-compare` it needs 24,458 iterations
+   (+4.6 %) and one solve stalls at the iteration cap. Recomputing `ȳ` implicitly caps
+   `|ȳ|` at about 18, which keeps saturated controls close to the interior in `y`. The
+   library keeps the paper's `ȳ = ∇ψ(ū)` and only replaces `±∞` by `±40c`, which is
+   bitwise neutral.
+9. **The cart-pole cost is not even C¹ at θ = 0** (the hanging start): the angle is
+   wrapped with `θ mod 2π`, so the gradient jumps by ±10π there. Sec. II assumes
+   twice-differentiable costs.
+10. **Euclidean-ball constraints can converge slowly.** On a small 2-D LQ problem whose
+    optimal controls slide along the boundary of the unit ball (`tests/test_solver.py`),
+    the solver's stopping measure falls roughly like 1/k: 5.5·10⁻⁴, 9·10⁻⁵ and 1.1·10⁻⁵
+    after 1,000, 5,000 and 20,000 iterations. When the active controls point in a fixed
+    direction it converges in 36 iterations. The paper's convergence analysis covers
+    boxes only; under the `λI` damping, steps along the curved boundary shrink with the
+    radial `Ψ⁻¹`.
 
 ## Changes relative to the original code
 
@@ -201,38 +224,53 @@ flags shown.
 * Both solvers have an iteration cap and a convergence status; the original loops could
   run forever.
 * A float64 guard: in float32 the original cart-pole solve never converged.
-* All Table I maps plus the polytope map. The box map includes μ (the original was wrong
-  for asymmetric boxes) and never returns `±∞`.
+* All Table I maps plus the polytope map, each with `contains(u)`. The box map includes μ
+  (the original was wrong for asymmetric boxes). Every inverse returns a point of `U` even
+  when the closed form saturates in float64, and `grad` never returns `±∞`.
+* `solve(x0, controls)` rejects initial controls outside `int(U)`. On the boundary
+  `Ψ⁻¹ = 0` and the solver would otherwise report convergence after one iteration.
 * IPDDP: works on current JAX; `eigvalsh` instead of the complex `eigvals`; the feedback
   gain of state constraints uses Σ = S⁻¹Z instead of S⁻¹ (a bug that does not affect the
-  benchmarks, which constrain controls only); optional `barrier_tol`.
+  benchmarks, which constrain controls only); optional `barrier_tol`, `barrier_init`, and
+  a fallback when the original initial-barrier rule gives μ₀ ≤ 0 (non-positive costs).
 * MPC loops record the applied controls.
-* `pyproject.toml` with extras, a pinned lock file, 28 tests (map identities, Lemma 3
-  against autodiff, LQ problem against a reference QP solution, Proposition 5, the
-  regression), CI and figure generation.
+* The regression gate also requires every MPC solve to converge and checks the polytope
+  iteration counts.
+* `pyproject.toml` with extras, a pinned lock file, CI, figure generation, and tests:
+  * map identities;
+  * Lemma 3 against autodiff;
+  * LQ problems for every map against reference solutions of the constrained problem;
+  * Proposition 5 over a full horizon;
+  * IPDDP gains against a direct KKT solve;
+  * the gate's own failure detection;
+  * the bitwise regression.
 
 Every change is bitwise-neutral on the four benchmarks.
 
 ## Performance follow-ups (deliberately not done)
 
 Correctness came first. These would speed things up but change the floating-point
-results, so each needs a reviewed re-baseline:
+results, so each needs a reviewed re-baseline. The scripts in `benchmarks/experiments/`
+reproduce every row:
 
-| Change | Measured effect on the benchmarks |
-|---|---|
-| Vectorize stage derivatives over the horizon | `cartpole-compare` +89 iterations, max 111 (was 102) |
-| One Cholesky factorization per stage instead of two LU solves | one cart-pole solve stalls at the iteration cap |
-| `vmap` the 10 MPC runs | not bitwise, one stalled solve, and slower (a batched `while_loop` waits for the slowest run) |
-| Damped Newton for the polytope inverse map (instead of optimistix) | `polytope-compare` +1.6 % iterations, max 45 (was 36) |
+| Change | Script | Measured effect |
+|---|---|---|
+| Vectorize stage derivatives over the horizon | `rounding_sensitivity.py` | `cartpole-compare` 23,470 iterations (+89), max 111 (was 102) |
+| One Cholesky factorization per stage instead of two LU solves | `rounding_sensitivity.py` | 24,422 iterations; one solve stalls at the iteration cap |
+| `vmap` the 10 MPC runs | `rounding_sensitivity.py` | 24,622 iterations, one stalled solve, and slower (4.8 s vs 3.9 s; a batched `while_loop` waits for the slowest run) |
+| Damped Newton for the polytope inverse map (instead of optimistix) | `polytope_damped_newton.py` | `polytope-compare` 28,074 iterations (+1.6 %), max 45 (was 36) |
 
 The runner already compiles each closed loop once and reuses it for all initial states.
 
 ## Development
 
 ```bash
-pytest -m "not slow"     # unit tests (~10 s)
-pytest -m slow           # bitwise regression against the original code (~40 s)
+pytest -m "not slow"     # unit tests (~30 s)
+pytest -m slow           # bitwise regression against the original code (~1-2 min)
 ruff check . && ruff format --check .
+python benchmarks/experiments/rounding_sensitivity.py    # the README's experiment numbers
+python benchmarks/experiments/carry_mirror_controls.py
+python benchmarks/experiments/polytope_damped_newton.py
 ```
 
 ## Citation

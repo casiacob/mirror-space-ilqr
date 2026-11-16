@@ -39,7 +39,7 @@ from jax import grad, hessian, jacrev
 
 from msilqr._x64 import require_x64
 from msilqr.mirror_maps import MirrorMap
-from msilqr.problem import OptimalControlProblem
+from msilqr.problem import OptimalControlProblem, rollout
 
 __all__ = ["MirrorILQR", "SolverOptions", "Solution", "Status"]
 
@@ -101,7 +101,7 @@ class MirrorILQR:
     Example::
 
         solver = MirrorILQR(problem, BoxEntropy(-50.0, 50.0))
-        sol = solver.solve(problem.rollout(x0, u_init), u_init)
+        sol = solver.solve(x0, u_init)
 
     ``solve`` is jit-compiled once per solver instance and input shape.
     """
@@ -195,17 +195,36 @@ class MirrorILQR:
 
     # ----------------------------------------------------------------- main loop ---
 
-    def solve(self, states: jax.Array, controls: jax.Array) -> Solution:
-        """Solve from an initial trajectory (``states = problem.rollout(x0, controls)``).
+    def solve(self, x0: jax.Array, controls: jax.Array) -> Solution:
+        """Solve from the initial state ``x0`` (``(n,)``) and initial controls ``(T, m)``.
 
-        ``controls`` must be strictly feasible (in ``int(U)``).
+        The initial controls must be strictly feasible (in ``int(U)``): at a boundary
+        point ``Psi^{-1} = 0``, so the mirror-space gradient vanishes and the solver would
+        stop at once. Concrete inputs are checked and a ``ValueError`` is raised otherwise
+        (inside ``jit``/``scan``, e.g. in :func:`~msilqr.mpc.mirror_mpc`, the check is
+        skipped: MPC warm starts may legitimately contain controls that rounded onto the
+        bound).
         """
         require_x64()
-        return self._solve_jit(states, controls)
+        x0, controls = _as_float64(x0), _as_float64(controls)
+        self.validate_controls(controls)
+        return self._solve_jit(x0, controls)
 
-    def _solve(self, states, controls) -> Solution:
+    def validate_controls(self, controls) -> None:
+        """Raise ``ValueError`` unless every concrete control is in ``int(U)`` (no-op when traced)."""
+        if isinstance(controls, jax.core.Tracer):
+            return
+        inside = jax.vmap(self.mirror_map.contains)(controls)
+        if not bool(jnp.all(inside)):
+            raise ValueError(
+                f"{int(jnp.sum(~inside))} of {controls.shape[0]} initial controls are not strictly inside "
+                "the constraint set; mirror-space iLQR needs a strictly feasible initial guess"
+            )
+
+    def _solve(self, x0, controls) -> Solution:
         opt = self.options
         total_cost = self.problem.total_cost
+        states = rollout(self.problem.dynamics, x0, controls)
 
         def cond(carry):
             *_, it, err = carry
@@ -247,10 +266,18 @@ class MirrorILQR:
             1e10,
         )
         states, controls, reg, _, cost, it, err = jax.lax.while_loop(cond, body, init)
+        return Solution(states, controls, cost, it, reg, err, termination_status(err < opt.tol, err, it))
 
-        status = jnp.where(
-            err < opt.tol,
-            Status.CONVERGED,
-            jnp.where(jnp.isfinite(err), Status.MAX_ITER, Status.NONFINITE),
-        )
-        return Solution(states, controls, cost, it, reg, err, status)
+
+def termination_status(converged, err, it):
+    """``CONVERGED`` if ``converged``; ``NONFINITE`` if at least one iteration ran and the
+    stopping measure is NaN/inf; ``MAX_ITER`` otherwise."""
+    nonfinite = jnp.logical_and(it > 0, jnp.logical_not(jnp.isfinite(err)))
+    return jnp.where(converged, Status.CONVERGED, jnp.where(nonfinite, Status.NONFINITE, Status.MAX_ITER))
+
+
+def _as_float64(a):
+    """Cast concrete inputs to float64 (traced values are left untouched)."""
+    if isinstance(a, jax.core.Tracer):
+        return a
+    return jnp.asarray(a, dtype=jnp.float64)

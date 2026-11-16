@@ -91,11 +91,60 @@ def test_box_entropy_rejects_nonpositive_scale():
         BoxEntropy(-1.0, 1.0, scale=0.0)
 
 
+@pytest.mark.parametrize("cls", [BoxEntropy, BoxLogBarrier])
+@pytest.mark.parametrize("low,high", [(1.0, 1.0), (2.0, 1.0), (-np.inf, 1.0), (0.0, np.nan)])
+def test_box_rejects_invalid_bounds(cls, low, high):
+    with pytest.raises(ValueError):
+        cls(low, high)
+
+
+@pytest.mark.parametrize("cls,y_big", [(BoxEntropy, 1e3), (BoxLogBarrier, 1e300)])
+def test_box_saturation_stays_in_closed_box_for_asymmetric_bounds(cls, y_big):
+    """mu +- rho can differ from the bound by one rounding error; the inverse must clip."""
+    rng = np.random.default_rng(0)
+    lows = rng.uniform(-100, 100, 2000)
+    highs = lows + rng.uniform(1e-3, 100, 2000)
+    for lo, hi in zip(lows, highs, strict=True):
+        mmap = cls(float(lo), float(hi))
+        for y in (y_big, -y_big):
+            u = mmap.inverse(jnp.array(y))
+            assert lo <= u <= hi
+            assert jnp.isfinite(mmap.grad(u))
+            assert mmap.inv_hessian(u)[0, 0] >= 0
+    # the reviewer's examples
+    assert BoxEntropy(0.1, 0.7).inverse(jnp.array(-40.0)) == 0.1
+    assert BoxEntropy(-1.0, 0.1).inverse(jnp.array(40.0)) == 0.1
+
+
+def test_positivity_and_ball_extreme_inputs():
+    pos = Positivity()
+    for y in (-1e4, -800.0, 800.0, 1e4):
+        u = pos.inverse(jnp.array([y]))
+        assert pos.contains(u) and jnp.all(jnp.isfinite(u)) and jnp.all(jnp.isfinite(pos.grad(u)))
+    ball = EuclideanBall()
+    for y in ([1e8, 0.0], [1e9, 1e9], [1e200, -1e200], [1e-300, 0.0], [0.0, 0.0]):
+        u = ball.inverse(jnp.array(y))
+        assert ball.contains(u) and jnp.all(jnp.isfinite(ball.grad(u))) and jnp.all(jnp.isfinite(ball.inv_hessian(u)))
+    np.testing.assert_allclose(ball.inverse(jnp.array([3.0, 4.0])), jnp.array([3.0, 4.0]) / jnp.sqrt(26.0), rtol=1e-15)
+
+
+def test_contains():
+    assert BoxEntropy(-1.0, 1.0).contains(jnp.array([0.5])) and not BoxEntropy(-1.0, 1.0).contains(jnp.array([1.0]))
+    assert BoxLogBarrier(0.0, 2.0).contains(jnp.array([1.0])) and not BoxLogBarrier(0.0, 2.0).contains(jnp.array([0.0]))
+    assert Positivity().contains(jnp.array([1e-300])) and not Positivity().contains(jnp.array([0.0, 1.0]))
+    assert EuclideanBall().contains(jnp.array([0.6, 0.7])) and not EuclideanBall().contains(jnp.array([0.6, 0.8]))
+    poly = PolytopeLogBarrier(G=jnp.array(POLYTOPE_G), h=jnp.array(POLYTOPE_H))
+    assert poly.contains(jnp.array([0.1, 0.1])) and not poly.contains(jnp.array([0.5, 0.0]))
+
+
 def test_polytope_map():
     mmap = PolytopeLogBarrier(G=jnp.array(POLYTOPE_G), h=jnp.array(POLYTOPE_H))
     u = jnp.array([0.1, -0.2])
     np.testing.assert_allclose(jax.jacfwd(mmap.grad)(u), mmap.hessian(u), rtol=1e-10)
-    np.testing.assert_allclose(mmap.inv_hessian(u) @ mmap.hessian(u), np.eye(2), atol=1e-12)
+    # Proposition 2: the Jacobian of the (numerical) inverse map is Psi^{-1}
+    y = mmap.grad(u)
+    inverse_jacobian = jax.jacrev(lambda y_: mmap.inverse(y_, u))(y)
+    np.testing.assert_allclose(inverse_jacobian, mmap.inv_hessian(u), rtol=1e-7, atol=1e-10)
     # Newton inverse from a nearby warm start
     for du in 0.05 * jax.random.normal(KEY, (20, 2)):
         target = u + du

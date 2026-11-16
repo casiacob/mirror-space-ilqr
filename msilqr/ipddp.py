@@ -26,8 +26,9 @@ so the regression benchmarks match it bitwise. Changes relative to the original:
 Known limitations kept for comparability with the paper (documented in the README):
 the step acceptance ignores primal infeasibility, the fraction-to-boundary rule is
 applied per stage (each stage takes its own dual/slack step size), and the stopping
-measure (max of ``|Q_u|``, ``|r_p|``, ``|r_d|``) differs from the mirror-space solver's
-(``max |Q_y|``), so "the same tolerance" does not mean the same accuracy.
+measure (max of ``|Qhat_u|``, ``|r_p|``, ``|r_d|``, where ``Qhat_u = Q_u + c_u^T S^{-1} r``
+is the gradient of the barrier-augmented Q-function) differs from the mirror-space
+solver's (``max |Q_y|``), so "the same tolerance" does not mean the same accuracy.
 """
 
 from __future__ import annotations
@@ -43,7 +44,7 @@ import jax.scipy as jcp
 from jax import grad, hessian, jacrev
 
 from msilqr._x64 import require_x64
-from msilqr.mirror_ilqr import Status
+from msilqr.mirror_ilqr import _as_float64, termination_status
 from msilqr.problem import OptimalControlProblem, rollout
 
 __all__ = ["InteriorPointDDP", "IPDDPOptions", "IPDDPSolution"]
@@ -51,7 +52,21 @@ __all__ = ["InteriorPointDDP", "IPDDPOptions", "IPDDPSolution"]
 
 @dataclass(frozen=True)
 class IPDDPOptions:
-    """Options of :class:`InteriorPointDDP` (defaults reproduce the paper's experiments)."""
+    """Options of :class:`InteriorPointDDP` (defaults reproduce the paper's experiments).
+
+    Attributes:
+        tol: stop when the stopping measure is below ``tol``.
+        max_iter: iteration cap.
+        reg_init, reg_factor_init, reg_min, reg_max: Levenberg-Marquardt regularization,
+            as in :class:`~msilqr.mirror_ilqr.SolverOptions`.
+        barrier_tol: if set, additionally require ``mu < barrier_tol`` to stop.
+        barrier_init: initial barrier parameter. ``None`` uses the original rule
+            ``mu_0 = J(u_0) / (T n_c)`` (Pavlov et al.).
+        barrier_init_fallback: ``mu_0`` used when the original rule gives ``mu_0 <= 0``
+            (non-positive costs; the original code then stalled). Whenever the rule gives
+            a positive value it is used unchanged, so results with positive costs are
+            bitwise identical to the original.
+    """
 
     tol: float = 1e-6
     max_iter: int = 1000
@@ -60,6 +75,8 @@ class IPDDPOptions:
     reg_min: float = 1e-16
     reg_max: float = 1e16
     barrier_tol: float | None = None
+    barrier_init: float | None = None
+    barrier_init_fallback: float = 1.0
 
 
 class IPDDPSolution(NamedTuple):
@@ -210,8 +227,16 @@ class InteriorPointDDP:
     # --------------------------------------------------------------- main loop ---
 
     def solve(self, x0, controls, slacks, duals) -> IPDDPSolution:
-        """Solve from ``x0`` with initial ``controls (T, m)``, ``slacks`` and ``duals`` ``(T, n_c)``."""
+        """Solve from ``x0`` with initial ``controls (T, m)``, ``slacks`` and ``duals`` ``(T, n_c)``.
+
+        The controls need not be feasible (infeasible variant), but slacks and duals must be
+        strictly positive; concrete inputs are checked.
+        """
         require_x64()
+        x0, controls, slacks, duals = (_as_float64(a) for a in (x0, controls, slacks, duals))
+        if not isinstance(slacks, jax.core.Tracer) and not isinstance(duals, jax.core.Tracer):
+            if not (bool(jnp.all(slacks > 0)) and bool(jnp.all(duals > 0))):
+                raise ValueError("initial slacks and duals must be strictly positive")
         return self._solve_jit(x0, controls, slacks, duals)
 
     def _solve(self, x0, initial_controls, initial_slacks, initial_duals) -> IPDDPSolution:
@@ -267,7 +292,11 @@ class InteriorPointDDP:
         initial_states = rollout(self.problem.dynamics, x0, initial_controls)
         horizon = initial_controls.shape[0]
         n_c = self.constraints(initial_states[0], initial_controls[0]).shape[0]
-        initial_barrier = self._barrier_total_cost(initial_states, initial_controls, initial_slacks, 0.0) / (horizon * n_c)
+        if opt.barrier_init is not None:
+            initial_barrier = jnp.asarray(opt.barrier_init, dtype=jnp.float64)
+        else:  # original rule; fall back only where it is non-positive (bitwise-neutral otherwise)
+            rule = self._barrier_total_cost(initial_states, initial_controls, initial_slacks, 0.0) / (horizon * n_c)
+            initial_barrier = jnp.where(rule > 0, rule, opt.barrier_init_fallback)
 
         init = (
             initial_states,
@@ -284,5 +313,4 @@ class InteriorPointDDP:
         converged = err < opt.tol
         if opt.barrier_tol is not None:
             converged = jnp.logical_and(converged, barrier < opt.barrier_tol)
-        status = jnp.where(converged, Status.CONVERGED, jnp.where(jnp.isfinite(err), Status.MAX_ITER, Status.NONFINITE))
-        return IPDDPSolution(states, controls, slacks, duals, it, barrier, err, status)
+        return IPDDPSolution(states, controls, slacks, duals, it, barrier, err, termination_status(converged, err, it))
