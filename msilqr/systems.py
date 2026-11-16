@@ -6,9 +6,8 @@ benchmarks reproduce the original results bitwise.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-import jax
 import jax.numpy as jnp
 
 from msilqr.problem import OptimalControlProblem, euler
@@ -65,15 +64,11 @@ class CartPole:
         sth = jnp.sin(pole_position)
         cth = jnp.cos(pole_position)
 
-        cart_acceleration = (
-            action + pole_mass * sth * (pole_length * pole_velocity**2 + gravity * cth)
-        ) / (cart_mass + pole_mass * sth**2)
+        cart_acceleration = (action + pole_mass * sth * (pole_length * pole_velocity**2 + gravity * cth)) / (cart_mass + pole_mass * sth**2)
 
-        pole_acceleration = (
-            -action * cth
-            - pole_mass * pole_length * pole_velocity**2 * cth * sth
-            - total_mass * gravity * sth
-        ) / (pole_length * cart_mass + pole_length * pole_mass * sth**2)
+        pole_acceleration = (-action * cth - pole_mass * pole_length * pole_velocity**2 * cth * sth - total_mass * gravity * sth) / (
+            pole_length * cart_mass + pole_length * pole_mass * sth**2
+        )
 
         return jnp.hstack((cart_velocity, pole_velocity, cart_acceleration, pole_acceleration))
 

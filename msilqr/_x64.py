@@ -10,7 +10,4 @@ import jax
 def require_x64() -> None:
     """Raise an informative error unless ``jax_enable_x64`` is on."""
     if not jax.config.jax_enable_x64:
-        raise RuntimeError(
-            "msilqr requires double precision. Enable it before creating arrays: "
-            'jax.config.update("jax_enable_x64", True)'
-        )
+        raise RuntimeError('msilqr requires double precision. Enable it before creating arrays: jax.config.update("jax_enable_x64", True)')

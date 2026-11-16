@@ -172,9 +172,7 @@ class MirrorILQR:
             dV = Qy @ k + 0.5 * k.T @ Qyy @ k
             return (Vx, Vxx), (K, k, dV, positive_definite, Qy)
 
-        _, (K, k, dV, positive_definite, Qy) = jax.lax.scan(
-            step, (Vx_final, Vxx_final), (states[:-1], controls), reverse=True
-        )
+        _, (K, k, dV, positive_definite, Qy) = jax.lax.scan(step, (Vx_final, Vxx_final), (states[:-1], controls), reverse=True)
         return K, k, jnp.sum(dV), jnp.all(positive_definite), jnp.max(jnp.abs(Qy))
 
     # --------------------------------------------------------------- forward pass ---
@@ -192,9 +190,7 @@ class MirrorILQR:
             x_new = p.dynamics(x_prev, u_new)
             return x_new, (x_new, u_new)
 
-        _, (new_states, new_controls) = jax.lax.scan(
-            step, states[0], (states[:-1], mirror_controls, controls, k, K)
-        )
+        _, (new_states, new_controls) = jax.lax.scan(step, states[0], (states[:-1], mirror_controls, controls, k, K))
         return jnp.vstack((states[0], new_states)), new_controls
 
     # ----------------------------------------------------------------- main loop ---

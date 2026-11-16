@@ -18,7 +18,7 @@ All maps act on a single control vector of shape ``(m,)`` and are pure JAX funct
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp

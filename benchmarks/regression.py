@@ -142,9 +142,36 @@ CASES = {
     c.name: c
     for c in (
         Case("cartpole", "cartpole", _cartpole_step, _cartpole_cost, _cartpole_goal_error, _box_violation, _cartpole_applied_controls),
-        Case("cartpole-compare", "cartpole-mm-v-ip", _cartpole_step, _cartpole_cost, _cartpole_goal_error, _box_violation, _cartpole_applied_controls, ("ms", "ip")),
-        Case("polytope", "wiener-polytope", _double_integrator_step, _double_integrator_cost, _double_integrator_goal_error, _polytope_violation, _double_integrator_applied_controls, has_ms_iterations=False),
-        Case("polytope-compare", "wiener-polytope-mm-v-ip", _double_integrator_step, _double_integrator_cost, _double_integrator_goal_error, _polytope_violation, _double_integrator_applied_controls, ("ms", "ip")),
+        Case(
+            "cartpole-compare",
+            "cartpole-mm-v-ip",
+            _cartpole_step,
+            _cartpole_cost,
+            _cartpole_goal_error,
+            _box_violation,
+            _cartpole_applied_controls,
+            ("ms", "ip"),
+        ),
+        Case(
+            "polytope",
+            "wiener-polytope",
+            _double_integrator_step,
+            _double_integrator_cost,
+            _double_integrator_goal_error,
+            _polytope_violation,
+            _double_integrator_applied_controls,
+            has_ms_iterations=False,
+        ),
+        Case(
+            "polytope-compare",
+            "wiener-polytope-mm-v-ip",
+            _double_integrator_step,
+            _double_integrator_cost,
+            _double_integrator_goal_error,
+            _polytope_violation,
+            _double_integrator_applied_controls,
+            ("ms", "ip"),
+        ),
     )
 }
 
@@ -240,7 +267,7 @@ class Verdict:
 
 COST_RTOL = 1e-9  # float noise allowance on the mean closed-loop cost
 GOAL_ATOL = 1e-6  # absolute allowance on the final goal error
-DYN_ATOL = 1e-9   # closed loop must follow the dynamics
+DYN_ATOL = 1e-9  # closed loop must follow the dynamics
 
 
 def gate(case: Case, golden: dict, new: dict, method: str) -> Verdict:
@@ -255,10 +282,18 @@ def gate(case: Case, golden: dict, new: dict, method: str) -> Verdict:
         else:
             v.checks.append(("total iterations", n["iters_total"] <= g["iters_total"], f"{g['iters_total']} -> {n['iters_total']}"))
             v.checks.append(("max iterations/step", n["iters_max"] <= g["iters_max"], f"{g['iters_max']} -> {n['iters_max']}"))
-    v.checks.append(("mean closed-loop cost", n["cost_mean"] <= g["cost_mean"] * (1 + COST_RTOL), f"{g['cost_mean']:.6f} -> {n['cost_mean']:.6f}"))
+    v.checks.append(
+        ("mean closed-loop cost", n["cost_mean"] <= g["cost_mean"] * (1 + COST_RTOL), f"{g['cost_mean']:.6f} -> {n['cost_mean']:.6f}")
+    )
     feas_limit = 0.0 if method == "ms" else max(g["violation_max"], 0.0)
     v.checks.append(("constraints", n["violation_max"] <= feas_limit, f"{g['violation_max']:+.2e} -> {n['violation_max']:+.2e}"))
-    v.checks.append(("goal error", n["goal_error_mean"] <= g["goal_error_mean"] + GOAL_ATOL, f"{g['goal_error_mean']:.2e} -> {n['goal_error_mean']:.2e}"))
+    v.checks.append(
+        (
+            "goal error",
+            n["goal_error_mean"] <= g["goal_error_mean"] + GOAL_ATOL,
+            f"{g['goal_error_mean']:.2e} -> {n['goal_error_mean']:.2e}",
+        )
+    )
     dev = float(np.abs(new[f"{method}_states"] - golden[f"{method}_states"]).max())
     v.checks.append(("(info) max state deviation from golden", True, f"{dev:.2e}"))
     return v

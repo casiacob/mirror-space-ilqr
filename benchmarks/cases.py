@@ -21,8 +21,8 @@ comparison samples its initial states around 0 instead of the paper's ``x0``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import jax
 import jax.numpy as jnp
@@ -136,8 +136,20 @@ CASES = {
     c.name: c
     for c in (
         Case("cartpole", "cart-pole swing-up, box |u| <= 50 (Fig. 3)", cartpole_inputs, cartpole_ms_solver),
-        Case("cartpole-compare", "cart-pole, MS vs IP over 10 initial states (Fig. 4 right)", cartpole_compare_inputs, cartpole_ms_solver, cartpole_ip_solver),
+        Case(
+            "cartpole-compare",
+            "cart-pole, MS vs IP over 10 initial states (Fig. 4 right)",
+            cartpole_compare_inputs,
+            cartpole_ms_solver,
+            cartpole_ip_solver,
+        ),
         Case("polytope", "double integrator, 8-sided polytope (Fig. 2)", polytope_inputs, polytope_ms_solver),
-        Case("polytope-compare", "double integrator, MS vs IP over 10 initial states (Fig. 4 left)", polytope_compare_inputs, polytope_ms_solver, polytope_ip_solver),
+        Case(
+            "polytope-compare",
+            "double integrator, MS vs IP over 10 initial states (Fig. 4 left)",
+            polytope_compare_inputs,
+            polytope_ms_solver,
+            polytope_ip_solver,
+        ),
     )
 }

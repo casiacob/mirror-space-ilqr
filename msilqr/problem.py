@@ -10,8 +10,8 @@ interior-point baseline in an explicit inequality ``g(x, u) <= 0``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import jax
 import jax.numpy as jnp

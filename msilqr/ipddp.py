@@ -32,8 +32,9 @@ measure (max of ``|Q_u|``, ``|r_p|``, ``|r_d|``) differs from the mirror-space s
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable, NamedTuple
+from typing import NamedTuple
 
 import jax
 import jax.lax

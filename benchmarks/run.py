@@ -24,13 +24,13 @@ import jax
 jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platform_name", "cpu")
 
-import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cases import CASES  # noqa: E402
+
 from msilqr import ipddp_mpc, mirror_mpc  # noqa: E402
 
 
@@ -53,15 +53,23 @@ def run_case(name: str) -> tuple[dict, dict]:
     ms = case.ms_solver()
     res, wall = _run_method(lambda x0: mirror_mpc(ms, x0, inp.u_init, inp.steps), inp.x0)
     out.update({f"ms_{k}": v for k, v in res.items()})
-    info["ms"] = {"wall_s": round(wall, 3), "iters_total": int(res["iterations"].sum()), "iters_max": int(res["iterations"].max()),
-                  "not_converged": int((res["status"] != 0).sum())}
+    info["ms"] = {
+        "wall_s": round(wall, 3),
+        "iters_total": int(res["iterations"].sum()),
+        "iters_max": int(res["iterations"].max()),
+        "not_converged": int((res["status"] != 0).sum()),
+    }
 
     if case.ip_solver is not None:
         ip = case.ip_solver()
         res, wall = _run_method(lambda x0: ipddp_mpc(ip, x0, inp.u_init, inp.ip_slacks, inp.ip_duals, inp.steps), inp.x0)
         out.update({f"ip_{k}": v for k, v in res.items()})
-        info["ip"] = {"wall_s": round(wall, 3), "iters_total": int(res["iterations"].sum()), "iters_max": int(res["iterations"].max()),
-                      "not_converged": int((res["status"] != 0).sum())}
+        info["ip"] = {
+            "wall_s": round(wall, 3),
+            "iters_total": int(res["iterations"].sum()),
+            "iters_max": int(res["iterations"].max()),
+            "not_converged": int((res["status"] != 0).sum()),
+        }
     return out, info
 
 

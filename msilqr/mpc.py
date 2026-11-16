@@ -35,7 +35,7 @@ def _shift(a):
     return jnp.vstack((a[1:], a[-1]))
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _mirror_mpc_fn(solver, num_steps: int):
     dynamics = solver.problem.dynamics
 
@@ -67,40 +67,33 @@ def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int) -> MPCR
     return _mirror_mpc_fn(solver, int(num_steps))(x0, u_init)
 
 
-@functools.lru_cache(maxsize=None)
-def _ipddp_mpc_fn(solver, num_steps: int, warm_start_duals: bool):
+@functools.cache
+def _ipddp_mpc_fn(solver, num_steps: int):
     dynamics = solver.problem.dynamics
 
     def run(x0, u_init, slacks, duals):
         def body(carry, _):
-            state, controls, s, z = carry
-            sol = solver.solve(state, controls, s, z)
+            state, controls = carry
+            sol = solver.solve(state, controls, slacks, duals)
             applied = sol.controls[0]
             next_state = dynamics(state, applied)
-            if warm_start_duals:
-                s, z = _shift(sol.slacks), _shift(sol.duals)
             out = (next_state, applied, sol.iterations, sol.status)
-            return (next_state, _shift(sol.controls), s, z), out
+            return (next_state, _shift(sol.controls)), out
 
-        _, (xs, us, its, status) = jax.lax.scan(body, (x0, u_init, slacks, duals), None, length=num_steps)
+        _, (xs, us, its, status) = jax.lax.scan(body, (x0, u_init), None, length=num_steps)
         return MPCResult(jnp.vstack((x0, xs)), us, its, status, jnp.full(num_steps, jnp.nan))
 
     return jax.jit(run)
 
 
-def ipddp_mpc(
-    solver,
-    x0: jax.Array,
-    u_init: jax.Array,
-    slacks: jax.Array,
-    duals: jax.Array,
-    num_steps: int,
-    warm_start_duals: bool = False,
-) -> MPCResult:
+def ipddp_mpc(solver, x0: jax.Array, u_init: jax.Array, slacks: jax.Array, duals: jax.Array, num_steps: int) -> MPCResult:
     """Closed loop of :class:`~msilqr.ipddp.InteriorPointDDP`.
 
-    By default (as in the paper's experiments) every MPC step restarts from the given
-    ``slacks`` and ``duals``; ``warm_start_duals=True`` shifts the previous solution's
-    slacks and duals instead, like the controls.
+    As in the paper's experiments, the controls are warm-started (shifted plan) but every
+    MPC step restarts from the given ``slacks`` and ``duals``, and the barrier parameter
+    and regularization are re-initialized. Warm-starting only the slacks and duals is not
+    an improvement: with the barrier parameter reset to its large initial value the
+    complementarity residual is inconsistent and every second solve stalls at the
+    iteration cap (observed on the double integrator).
     """
-    return _ipddp_mpc_fn(solver, int(num_steps), bool(warm_start_duals))(x0, u_init, slacks, duals)
+    return _ipddp_mpc_fn(solver, int(num_steps))(x0, u_init, slacks, duals)
