@@ -264,13 +264,37 @@ def gate(case: Case, golden: dict, new: dict, method: str) -> Verdict:
     return v
 
 
-def run(new_dir: str, golden_dir: str, cases: list[str]) -> list[Verdict]:
+def bitwise_checks(golden: dict, new: dict, method: str) -> list:
+    """Exact equality with the golden run (states, iterations; controls exact for MS).
+
+    The legacy IP controls are reconstructed from states (see LEGACY_IP_CONTROLS_SHIFTED),
+    which is exact only up to ~1e-12, so IP controls are compared with a tolerance.
+    """
+    checks = []
+    for field_ in ("states", "iterations"):
+        key = f"{method}_{field_}"
+        if key in golden:
+            ok = key in new and new[key].shape == golden[key].shape and np.array_equal(new[key], golden[key])
+            checks.append((f"bitwise {field_}", bool(ok), ""))
+    key = f"{method}_controls"
+    if method == "ip" and LEGACY_IP_CONTROLS_SHIFTED:
+        err = float(np.abs(new[key] - golden[key]).max())
+        checks.append(("controls (vs reconstructed)", err <= RECONSTRUCTION_ATOL, f"{err:.1e}"))
+    else:
+        checks.append(("bitwise controls", bool(np.array_equal(new[key], golden[key])), ""))
+    return checks
+
+
+def run(new_dir: str, golden_dir: str, cases: list[str], bitwise: bool = False) -> list[Verdict]:
     verdicts = []
     for name in cases:
         case = CASES[name]
         golden, new = load_legacy(case, golden_dir), load_new(case, new_dir)
         for method in case.methods:
-            verdicts.append(gate(case, golden, new, method))
+            v = gate(case, golden, new, method)
+            if bitwise:
+                v.checks.extend(bitwise_checks(golden, new, method))
+            verdicts.append(v)
     return verdicts
 
 
@@ -280,9 +304,10 @@ def main(argv=None) -> int:
     p.add_argument("--golden", default=DEFAULT_GOLDEN)
     p.add_argument("--cases", nargs="*", default=list(CASES))
     p.add_argument("--json", help="write a machine-readable report here")
+    p.add_argument("--bitwise", action="store_true", help="also require exact equality with the golden run")
     args = p.parse_args(argv)
 
-    verdicts = run(args.new, args.golden, args.cases)
+    verdicts = run(args.new, args.golden, args.cases, bitwise=args.bitwise)
     for v in verdicts:
         print(f"[{'PASS' if v.ok else 'FAIL'}] {v.case} / {v.method.upper()}")
         for name, ok, detail in v.checks:
