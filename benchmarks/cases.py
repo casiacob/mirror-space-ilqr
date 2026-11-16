@@ -32,6 +32,7 @@ from msilqr import (
     CartPole,
     DoubleIntegrator,
     InteriorPointDDP,
+    IPDDPOptions,
     MirrorILQR,
     PolytopeLogBarrier,
 )
@@ -55,8 +56,8 @@ class Case:
     name: str
     description: str
     inputs: Callable[[], Inputs]
-    ms_solver: Callable[[], MirrorILQR]
-    ip_solver: Callable[[], InteriorPointDDP] | None = None
+    ms_solver: Callable[..., MirrorILQR]  # cart-pole cases accept box_scale=
+    ip_solver: Callable[..., InteriorPointDDP] | None = None  # accepts options=IPDDPOptions(...)
 
 
 # ------------------------------------------------------------------- cart-pole ---
@@ -73,8 +74,8 @@ def cartpole_box_constraints(state, control):
     return jnp.hstack((c0, c1))
 
 
-def cartpole_ip_solver() -> InteriorPointDDP:
-    return InteriorPointDDP(CartPole().problem(), cartpole_box_constraints)
+def cartpole_ip_solver(options: IPDDPOptions | None = None) -> InteriorPointDDP:
+    return InteriorPointDDP(CartPole().problem(), cartpole_box_constraints, options or IPDDPOptions())
 
 
 def cartpole_inputs() -> Inputs:
@@ -110,8 +111,8 @@ def polytope_constraints(state, control):
     return jnp.array(POLYTOPE_G) @ control - jnp.array(POLYTOPE_H)
 
 
-def polytope_ip_solver() -> InteriorPointDDP:
-    return InteriorPointDDP(DoubleIntegrator().problem(), polytope_constraints)
+def polytope_ip_solver(options: IPDDPOptions | None = None) -> InteriorPointDDP:
+    return InteriorPointDDP(DoubleIntegrator().problem(), polytope_constraints, options or IPDDPOptions())
 
 
 def polytope_inputs() -> Inputs:

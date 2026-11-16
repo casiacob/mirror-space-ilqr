@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cases import CASES  # noqa: E402
 
-from msilqr import ipddp_mpc, mirror_mpc  # noqa: E402
+from msilqr import IPDDPOptions, ipddp_mpc, mirror_mpc  # noqa: E402
 
 
 def _run_method(fn, x0s):
@@ -44,13 +44,20 @@ def _run_method(fn, x0s):
     return stack, wall
 
 
-def run_case(name: str) -> tuple[dict, dict]:
+def run_case(name: str, box_scale: float | None = None, ip_barrier_tol: float | None = None) -> tuple[dict, dict]:
+    """Run one case. ``box_scale`` (cart-pole cases only) and ``ip_barrier_tol`` select
+    variants that differ from the original experiments; leave them ``None`` to reproduce
+    the golden results."""
     case = CASES[name]
     inp = case.inputs()
     out = {"x0": np.asarray(inp.x0)}
     info = {"case": name, "description": case.description, "n_init": int(inp.x0.shape[0]), "steps": inp.steps}
+    if box_scale is not None and name.startswith("cartpole"):
+        info["box_scale"] = box_scale
+    if ip_barrier_tol is not None and case.ip_solver is not None:
+        info["ip_barrier_tol"] = ip_barrier_tol
 
-    ms = case.ms_solver()
+    ms = case.ms_solver(box_scale=box_scale) if "box_scale" in info else case.ms_solver()
     res, wall = _run_method(lambda x0: mirror_mpc(ms, x0, inp.u_init, inp.steps), inp.x0)
     out.update({f"ms_{k}": v for k, v in res.items()})
     info["ms"] = {
@@ -61,7 +68,7 @@ def run_case(name: str) -> tuple[dict, dict]:
     }
 
     if case.ip_solver is not None:
-        ip = case.ip_solver()
+        ip = case.ip_solver(IPDDPOptions(barrier_tol=ip_barrier_tol)) if "ip_barrier_tol" in info else case.ip_solver()
         res, wall = _run_method(lambda x0: ipddp_mpc(ip, x0, inp.u_init, inp.ip_slacks, inp.ip_duals, inp.steps), inp.x0)
         out.update({f"ip_{k}": v for k, v in res.items()})
         info["ip"] = {
@@ -77,6 +84,8 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Run the msilqr benchmark cases.")
     p.add_argument("--out", required=True)
     p.add_argument("--cases", nargs="*", default=list(CASES), choices=list(CASES))
+    p.add_argument("--box-scale", type=float, help="variant: cart-pole box-map scale (original 0.5; paper Table I: 1)")
+    p.add_argument("--ip-barrier-tol", type=float, help="variant: IPDDP also requires barrier parameter < this to stop")
     args = p.parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
@@ -87,7 +96,7 @@ def main(argv=None) -> int:
         "cases": [],
     }
     for name in args.cases:
-        arrays, info = run_case(name)
+        arrays, info = run_case(name, box_scale=args.box_scale, ip_barrier_tol=args.ip_barrier_tol)
         np.savez(os.path.join(args.out, name + ".npz"), **arrays)
         summary["cases"].append(info)
         line = f"[run] {name:18s} MS iters {info['ms']['iters_total']:6d} (max {info['ms']['iters_max']:3d}, {info['ms']['wall_s']:.1f}s)"
