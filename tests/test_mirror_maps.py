@@ -18,7 +18,6 @@ def _box_points(low, high, n=7):
 
 CLOSED_FORM = [
     ("box-entropy", BoxEntropy(-50.0, 50.0), _box_points(jnp.array([-50.0, -50.0]), jnp.array([50.0, 50.0]))),
-    ("box-entropy-half", BoxEntropy(-50.0, 50.0, scale=0.5), _box_points(jnp.array([-50.0, -50.0]), jnp.array([50.0, 50.0]))),
     (
         "box-entropy-asym",
         BoxEntropy(jnp.array([-10.0, 0.0]), jnp.array([50.0, 1.0])),
@@ -65,30 +64,14 @@ def test_box_entropy_is_table_one():
         np.testing.assert_allclose(mmap.inverse(y), mu + rho * jnp.tanh(y / 2), rtol=1e-12)
 
 
-def test_box_entropy_scale_reproduces_original_cartpole_map():
-    """scale=0.5 is the map of the original cart-pole scripts: 0.5 log(...), rho tanh(y)."""
-    mmap = BoxEntropy(-50.0, 50.0, scale=0.5)
-    for u in jnp.linspace(-49.0, 49.0, 9):
-        assert mmap.grad(u) == 0.5 * jnp.log((u + 50.0) / (50.0 - u))
-        assert mmap.inv_hessian(u)[0, 0] == 2.0 * (u + 50.0) * (50.0 - u) / 100.0
-    for y in jnp.linspace(-5.0, 5.0, 9):
-        assert mmap.inverse(y) == 50.0 * jnp.tanh(y)
-
-
-@pytest.mark.parametrize("scale", [0.5, 1.0, 2.0])
-def test_box_entropy_saturation_is_finite(scale):
-    mmap = BoxEntropy(-50.0, 50.0, scale=scale)
+def test_box_entropy_saturation_is_finite():
+    mmap = BoxEntropy(-50.0, 50.0)
     y_at_bound = mmap.grad(jnp.array(50.0))
     assert jnp.isfinite(y_at_bound) and y_at_bound == mmap.y_clip
     assert mmap.grad(jnp.array(-50.0)) == -mmap.y_clip
     # the clip value maps exactly onto the bound, like +-inf did in the original code
     assert mmap.inverse(mmap.y_clip) == 50.0 and mmap.inverse(-mmap.y_clip) == -50.0
     assert mmap.inv_hessian(jnp.array(50.0))[0, 0] == 0.0
-
-
-def test_box_entropy_rejects_nonpositive_scale():
-    with pytest.raises(ValueError):
-        BoxEntropy(-1.0, 1.0, scale=0.0)
 
 
 @pytest.mark.parametrize("cls", [BoxEntropy, BoxLogBarrier])

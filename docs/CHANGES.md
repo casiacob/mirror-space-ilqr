@@ -31,24 +31,31 @@
   gain of state constraints uses Σ = S⁻¹Z instead of S⁻¹ (a bug that does not affect the
   benchmarks, which constrain controls only); `barrier_init`, and a fallback when the
   original initial-barrier rule gives μ₀ ≤ 0 (non-positive costs).
-* The default IPDDP options resolve the baseline points of `docs/PAPER_NOTES.md` (notes 2
-  and 4): it stops only once μ < `barrier_tol` (1e-6); controls, slacks and duals take one
-  step size, halved until the fraction-to-boundary rule holds; a filter on (barrier cost,
-  `‖g + s‖₁`) accepts steps; `ipddp_mpc` warm-starts slacks, duals and μ.
-  `IPDDPOptions.paper()` reproduces the paper's baseline bitwise, and
-  `benchmarks/run.py --baseline fixed` runs the comparison with the fixed one. Tested
-  against a projected-gradient QP solution and SciPy's SLSQP.
-* Optional stopping tests on the KKT conditions of the constrained problem, next to the
-  paper's (the defaults are unchanged):
-  * `SolverOptions(stopping="natural")`: mirror-space iLQR stops on the natural residual
-    `max |u − Π_U(u − ∇J)|` (`∇J` from an adjoint sweep in the backward pass; every
-    constraint set has a `project` method). It ends with `Status.STALLED` once a rejected
-    step predicts a decrease below `10ε|J|`, which float64 cannot register;
-  * `IPDDPOptions(stopping="kkt")`: IPDDP stops on the unperturbed KKT error
-    `max(|∇_u L| / c, |g + s|, |s z| / c)` with its own duals and IPOPT's scaling `c`.
-
-  `benchmarks/run.py --baseline fixed --stop kkt` runs the comparison with both.
-* MPC loops record the applied controls.
+* IPDDP differs from the paper's baseline: controls, slacks and duals take one step size,
+  halved until the fraction-to-boundary rule holds; a filter on (barrier cost, `‖g + s‖₁`)
+  accepts steps; `ipddp_mpc` warm-starts slacks, duals and μ. It stops on the unperturbed
+  KKT error `max(|∇_u L| / c, |g + s|, |s z| / c)` with its own duals and IPOPT's scaling
+  `c`. The paper's baseline (full steps, stopping on the barrier-subproblem residual) is
+  removed; it remains on `main`. Tested against a projected-gradient QP solution and
+  SciPy's SLSQP.
+* Both solvers default to `tol = 1e-4`.
+* Mirror-space iLQR stops on the natural residual `max |u − Π_U(u − ∇J)|` instead of the
+  paper's `max |Q_y|`, which vanishes at every saturated control whichever way the gradient
+  points. `∇J` comes from an adjoint sweep in the
+  backward pass, and every constraint set has a `project` method. A solve ends with
+  `Status.STALLED` once a rejected step predicts a decrease below `10ε|J|`, which float64
+  cannot register.
+* `SolverOptions(one_sided=True)` (`BoxEntropy`, `PolytopeLogBarrier`; `run.py --one-sided`):
+  in every iteration each control uses the map of only the part of the boundary it is
+  heading towards: one bound of a box, or the facets ahead of it in a polytope. A control on
+  the boundary whose gradient points back into the set is then released instead of frozen.
+* `benchmarks/stopping.py` measures where the stopping test stops on the polytope problem
+  against the exact optimum.
+* MPC loops record the applied controls. Both take `warm_start`: `True` starts each solve
+  from the previous plan shifted by one step, `False` from the initial guess
+  (`run.py --cold-start`).
+* `BoxEntropy` has no `scale` any more: it is always the paper's Table I map (the original
+  cart-pole scripts used half of it).
 * `pyproject.toml` with extras, CI (lint with a pinned ruff), figure generation, and tests:
   * map identities;
   * Lemma 3 against autodiff;

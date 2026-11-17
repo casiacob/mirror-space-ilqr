@@ -25,7 +25,6 @@ from msilqr import (
 from msilqr.systems import POLYTOPE_G, POLYTOPE_H
 
 CARTPOLE_BOX = (-50.0, 50.0)
-CARTPOLE_BOX_SCALE = 0.5  # the original scripts' map; the paper's Table I map is scale=1
 
 
 @dataclass(frozen=True)
@@ -42,8 +41,8 @@ class Case:
     name: str
     description: str
     inputs: Callable[[], Inputs]
-    ms_solver: Callable[..., MirrorILQR]  # cart-pole cases accept box_scale=
-    ip_solver: Callable[..., InteriorPointDDP] | None = None  # options default to IPDDPOptions.paper()
+    ms_solver: Callable[[], MirrorILQR]
+    ip_solver: Callable[..., InteriorPointDDP] | None = None
 
 
 N_SEEDS = 25
@@ -59,8 +58,8 @@ def seeded_runs(x0, horizon, nu, n_seeds=N_SEEDS):
 # ------------------------------------------------------------------- cart-pole ---
 
 
-def cartpole_ms_solver(box_scale: float = CARTPOLE_BOX_SCALE) -> MirrorILQR:
-    return MirrorILQR(CartPole().problem(), BoxEntropy(*CARTPOLE_BOX, scale=box_scale))
+def cartpole_ms_solver() -> MirrorILQR:
+    return MirrorILQR(CartPole().problem(), BoxEntropy(*CARTPOLE_BOX))
 
 
 def cartpole_box_constraints(state, control):
@@ -71,7 +70,7 @@ def cartpole_box_constraints(state, control):
 
 
 def cartpole_ip_solver(options: IPDDPOptions | None = None) -> InteriorPointDDP:
-    return InteriorPointDDP(CartPole().problem(), cartpole_box_constraints, options or IPDDPOptions.paper())
+    return InteriorPointDDP(CartPole().problem(), cartpole_box_constraints, options or IPDDPOptions())
 
 
 def cartpole_inputs() -> Inputs:
@@ -103,7 +102,7 @@ def polytope_constraints(state, control):
 
 
 def polytope_ip_solver(options: IPDDPOptions | None = None) -> InteriorPointDDP:
-    return InteriorPointDDP(DoubleIntegrator().problem(), polytope_constraints, options or IPDDPOptions.paper())
+    return InteriorPointDDP(DoubleIntegrator().problem(), polytope_constraints, options or IPDDPOptions())
 
 
 def polytope_inputs() -> Inputs:

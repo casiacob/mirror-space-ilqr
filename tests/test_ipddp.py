@@ -1,4 +1,4 @@
-"""Interior-point DDP baseline: the paper's variant and the fixed default."""
+"""Interior-point DDP baseline."""
 
 import jax
 import jax.numpy as jnp
@@ -88,29 +88,24 @@ def polytope_inputs():
     return jnp.array([0.2, -0.1, -0.1, 0.1]), 0.1 * jnp.ones((15, 2)), 0.1 * jnp.ones((15, 8)), 0.01 * jnp.ones((15, 8))
 
 
-def test_status_cap_and_barrier_tol():
+def test_status_and_cap():
     x0, u0, s0, z0 = polytope_inputs()
-    paper = InteriorPointDDP(DoubleIntegrator().problem(), lambda x, u: G @ u - H, IPDDPOptions.paper()).solve(x0, u0, s0, z0)
-    assert paper.status == Status.CONVERGED and paper.barrier > 1e-6  # the paper's baseline stops before mu reaches tol
-    strict = InteriorPointDDP(DoubleIntegrator().problem(), lambda x, u: G @ u - H, IPDDPOptions.paper(barrier_tol=1e-6))
-    strict = strict.solve(x0, u0, s0, z0)
-    assert strict.status == Status.CONVERGED and strict.barrier < 1e-6 and strict.iterations > paper.iterations
-    fixed = polytope_solver().solve(x0, u0, s0, z0)  # the default stops only once mu < 1e-6
-    assert fixed.status == Status.CONVERGED and fixed.barrier < 1e-6
+    sol = polytope_solver().solve(x0, u0, s0, z0)
+    assert sol.status == Status.CONVERGED and sol.error < 1e-4 and IPDDPOptions().tol == 1e-4
     capped = polytope_solver(max_iter=3).solve(x0, u0, s0, z0)
     assert int(capped.iterations) == 3 and capped.status == Status.MAX_ITER
     none = polytope_solver(max_iter=0).solve(x0, u0, s0, z0)
     assert int(none.iterations) == 0 and none.status == Status.MAX_ITER
-    assert jnp.all(G @ strict.controls.T - H[:, None] <= 1e-6)
+    assert jnp.all(G @ sol.controls.T - H[:, None] <= 1e-4)
 
 
 def test_barrier_init_and_nonpositive_costs():
     x0, u0, s0, z0 = polytope_inputs()
     system = DoubleIntegrator()
     shifted = OptimalControlProblem(system.problem().dynamics, lambda x, u: system.stage_cost(x, u) - 100.0, system.final_cost)
-    reference = polytope_solver(barrier_tol=1e-8).solve(x0, u0, s0, z0)
+    reference = polytope_solver(tol=1e-8).solve(x0, u0, s0, z0)
     for options in (dict(barrier_init=1.0), dict()):  # explicit, and the fallback of the original rule
-        ip = InteriorPointDDP(shifted, lambda x, u: G @ u - H, IPDDPOptions(barrier_tol=1e-8, **options))
+        ip = InteriorPointDDP(shifted, lambda x, u: G @ u - H, IPDDPOptions(tol=1e-8, **options))
         sol = ip.solve(x0, u0, s0, z0)
         assert sol.status == Status.CONVERGED
         # same solution up to the interior-point accuracy at this tolerance (with mu_0 < 0
@@ -130,13 +125,13 @@ def test_rejects_nonpositive_slacks_or_duals():
         polytope_solver().solve(x0, u0, s0[:-1], z0)
 
 
-@pytest.mark.parametrize("bad", [{"barrier_init": 0.0}, {"barrier_tol": -1e-6}, {"barrier_init_fallback": 0.0}, {"reg_init": -1.0}])
+@pytest.mark.parametrize("bad", [{"barrier_init": 0.0}, {"barrier_init_fallback": 0.0}, {"reg_init": -1.0}])
 def test_options_are_validated(bad):
     with pytest.raises(ValueError):
         IPDDPOptions(**bad)
 
 
-# --------------------------------------------- the fixed default against references ---
+# ------------------------------------------------------------- against references ---
 
 
 def box_constraints(x, u):
@@ -149,8 +144,11 @@ def box_constraints(x, u):
 CONTROL_ATOL = 2e-3
 
 
+TIGHT = IPDDPOptions(tol=1e-6)
+
+
 def check_kkt_point(sol, constraints, tol=1e-6):
-    assert sol.status == Status.CONVERGED and sol.barrier < tol and sol.error < tol
+    assert sol.status == Status.CONVERGED and sol.error < tol
     c = jax.vmap(constraints)(sol.states[:-1], sol.controls)
     assert float(jnp.max(jnp.abs(c + sol.slacks))) <= tol and float(jnp.max(c)) <= tol
 
@@ -158,7 +156,7 @@ def check_kkt_point(sol, constraints, tol=1e-6):
 def test_box_constrained_lq_matches_projected_gradient():
     problem, x0 = lq_1d(), jnp.array([2.0, 0.0])  # 26 of the 30 optimal controls on the bound
     u_ref, J_ref = reference_qp(problem, x0, 1, box(-1.0, 1.0))
-    sol = InteriorPointDDP(problem, box_constraints).solve(x0, jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2)))
+    sol = InteriorPointDDP(problem, box_constraints, TIGHT).solve(x0, jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2)))
     check_kkt_point(sol, box_constraints)
     np.testing.assert_allclose(problem.total_cost(sol.states, sol.controls), J_ref, rtol=1e-6)
     np.testing.assert_allclose(sol.controls, u_ref, atol=CONTROL_ATOL)
@@ -184,7 +182,7 @@ def test_polytope_constrained_double_integrator_matches_scipy():
     assert float(np.max(u_ref @ Gn.T - Hn)) > -1e-6, "the constraints should be active"
 
     constraints = lambda x, u: G @ u - H  # noqa: E731
-    sol = InteriorPointDDP(problem, constraints).solve(x0, jnp.zeros((horizon, 2)), jnp.ones((horizon, 8)), jnp.ones((horizon, 8)))
+    sol = InteriorPointDDP(problem, constraints, TIGHT).solve(x0, jnp.zeros((horizon, 2)), jnp.ones((horizon, 8)), jnp.ones((horizon, 8)))
     check_kkt_point(sol, constraints)
     np.testing.assert_allclose(problem.total_cost(sol.states, sol.controls), ref.fun, rtol=1e-6)
     np.testing.assert_allclose(sol.controls, u_ref, atol=CONTROL_ATOL)
@@ -219,8 +217,6 @@ def test_barrier_override_and_options():
         polytope_solver().solve(x0, u0, s0, z0, barrier=0.0)
     assert int(polytope_solver(max_iter=0).solve(x0, u0, s0, z0, barrier=0.5).iterations) == 0
     assert float(polytope_solver(max_iter=0).solve(x0, u0, s0, z0, barrier=0.5).barrier) == 0.5
-    paper = IPDDPOptions.paper()
-    assert paper.barrier_tol is None and not paper.line_search and IPDDPOptions().line_search
     with pytest.raises(ValueError):
         IPDDPOptions(max_backtracks=-1)
 
@@ -242,7 +238,7 @@ def test_kkt_error_matches_autodiff():
     """``E_0`` with the open-loop Lagrangian gradient from the adjoint sweep against ``jax.grad``
     (state-dependent constraints, duals large enough that the scaling ``c`` exceeds 1)."""
     problem, horizon = nonlinear_problem(), 6
-    ip = InteriorPointDDP(problem, state_constraints, IPDDPOptions(stopping="kkt"))
+    ip = InteriorPointDDP(problem, state_constraints)
     x0, u = jnp.array([0.3, -0.2]), 0.4 * jnp.cos(jnp.arange(horizon, dtype=float))[:, None]
     rng = np.random.default_rng(1)
     s, z = jnp.asarray(rng.uniform(0.1, 1.0, (horizon, 3))), jnp.asarray(rng.uniform(100.0, 400.0, (horizon, 3)))
@@ -258,19 +254,13 @@ def test_kkt_error_matches_autodiff():
     *_, kkt_error = ip.backward_pass(states, u, s, z, 0.1, 1e-2)
     assert c > 1
     np.testing.assert_allclose(kkt_error, expected, rtol=1e-12)
-    assert InteriorPointDDP(problem, state_constraints).backward_pass(states, u, s, z, 0.1, 1e-2)[-1] is None
 
 
 def test_kkt_stopping_reaches_the_constrained_optimum():
     problem, x0 = lq_1d(), jnp.array([2.0, 0.0])  # 26 of the 30 optimal controls on the bound
     u_ref, _ = reference_qp(problem, x0, 1, box(-1.0, 1.0))
-    ip = InteriorPointDDP(problem, box_constraints, IPDDPOptions(stopping="kkt"))
+    ip = InteriorPointDDP(problem, box_constraints, TIGHT)
     sol = ip.solve(x0, jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2)))
     assert sol.status == Status.CONVERGED and sol.error < 1e-6
     # s z <= tol puts a control within tol / z of its bound: at stage 26 z = 0.03, so 1e-5 away
     np.testing.assert_allclose(sol.controls, u_ref, atol=1e-4)
-    for bad in ({"stopping": "natural"}, {"stopping": "kkt", "line_search": False}):
-        with pytest.raises(ValueError, match="stopping"):
-            IPDDPOptions(**bad)
-    with pytest.raises(ValueError, match="line_search"):
-        IPDDPOptions.paper(stopping="kkt")

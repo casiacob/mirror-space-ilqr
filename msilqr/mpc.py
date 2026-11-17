@@ -1,7 +1,9 @@
 """Receding-horizon (MPC) closed loops for both solvers.
 
-Each step solves the finite-horizon problem from the current state, applies the first
-control, and warm-starts the next solve with the plan shifted by one step.
+Each step solves the finite-horizon problem from the current state and applies the first
+control. With ``warm_start=True`` (the default) the next solve starts from the previous
+plan shifted by one step; with ``warm_start=False`` every solve starts from the initial
+guess passed to the loop.
 """
 
 from __future__ import annotations
@@ -36,13 +38,13 @@ def _shift(a):
     return jnp.vstack((a[1:], a[-1]))
 
 
-def _mirror_mpc_fn(solver, num_steps: int):
+def _mirror_mpc_fn(solver, num_steps: int, warm_start: bool):
     def run(x0, u_init):
         def body(carry, _):
             state, controls = carry
             sol = solver.solve(state, controls, validate=False)  # shifted plans may touch the bound
             out = (sol.states[1], sol.controls[0], sol.iterations, sol.status, sol.cost)
-            return (sol.states[1], _shift(sol.controls)), out
+            return (sol.states[1], _shift(sol.controls) if warm_start else u_init), out
 
         _, (xs, us, its, status, costs) = jax.lax.scan(body, (x0, u_init), None, length=num_steps)
         return MPCResult(jnp.vstack((x0, xs)), us, its, status, costs)
@@ -50,7 +52,7 @@ def _mirror_mpc_fn(solver, num_steps: int):
     return jax.jit(run)
 
 
-def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int) -> MPCResult:
+def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int, *, warm_start: bool = True) -> MPCResult:
     """Closed loop of :class:`~msilqr.msilqr.MirrorILQR`.
 
     Args:
@@ -58,11 +60,14 @@ def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int) -> MPCR
         x0: initial state ``(n,)``.
         u_init: initial control sequence ``(T, m)``, strictly feasible (checked).
         num_steps: number of MPC steps.
+        warm_start: start every solve after the first from the previous plan shifted by one
+            step (the last control repeated). ``False``: start every solve from ``u_init``.
     """
     check_trajectory_shapes(x0, u_init)
     x0, u_init = _as_float64(x0), _as_float64(u_init)
     solver.validate_controls(u_init)
-    fn = _cached(solver, ("mirror", int(num_steps)), lambda: _mirror_mpc_fn(solver, int(num_steps)))
+    key = ("mirror", int(num_steps), bool(warm_start))
+    fn = _cached(solver, key, lambda: _mirror_mpc_fn(solver, int(num_steps), bool(warm_start)))
     return fn(x0, u_init)
 
 
@@ -90,15 +95,13 @@ def _ipddp_mpc_fn(solver, num_steps: int, warm_start: bool):
             xs, us, its, status = (jnp.concatenate((f[None], r)) for f, r in zip(first, rest, strict=True))
         else:
 
-            def body(carry, _):
-                state, controls = carry
-                sol = solver.solve(state, controls, slacks, duals)
+            def body(state, _):
+                sol = solver.solve(state, u_init, slacks, duals)
                 applied = sol.controls[0]
                 next_state = dynamics(state, applied)
-                out = (next_state, applied, sol.iterations, sol.status)
-                return (next_state, _shift(sol.controls)), out
+                return next_state, (next_state, applied, sol.iterations, sol.status)
 
-            _, (xs, us, its, status) = jax.lax.scan(body, (x0, u_init), None, length=num_steps)
+            _, (xs, us, its, status) = jax.lax.scan(body, x0, None, length=num_steps)
         return MPCResult(jnp.vstack((x0, xs)), us, its, status, jnp.full(num_steps, jnp.nan))
 
     return jax.jit(run)
@@ -113,9 +116,8 @@ def ipddp_mpc(
     controls, slacks and duals of the previous plan, with the barrier parameter set to their
     average complementarity ``mean(s z)`` (at least the solver's smallest ``mu``), so the warm start
     lies near the central path. The first step starts from the given slacks and duals with
-    the initial barrier rule. With ``warm_start=False`` (the protocol of the paper's Fig. 4)
-    only the controls are warm-started: every step restarts from the given ``slacks`` and
-    ``duals`` with the initial barrier rule.
+    the initial barrier rule. With ``warm_start=False`` every step starts from the given
+    ``u_init``, ``slacks`` and ``duals`` with the initial barrier rule.
     """
     check_trajectory_shapes(x0, u_init, slacks, duals)
     x0, u_init, slacks, duals = (_as_float64(a) for a in (x0, u_init, slacks, duals))

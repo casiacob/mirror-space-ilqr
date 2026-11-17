@@ -8,14 +8,17 @@ import pytest
 from msilqr import (
     BoxEntropy,
     BoxLogBarrier,
+    DoubleIntegrator,
     EuclideanBall,
     MirrorILQR,
     OptimalControlProblem,
+    PolytopeLogBarrier,
     Positivity,
     SolverOptions,
     Status,
     mirror_mpc,
 )
+from msilqr.systems import POLYTOPE_G, POLYTOPE_H
 
 T = 30
 
@@ -71,7 +74,6 @@ def box(lo, hi):
 CASES = [
     # name, problem, mirror map, x0, initial control, projection, cost rtol, converges
     ("box-entropy", lq_1d, BoxEntropy(-1.0, 1.0), [3.0, 0.0], 0.0, box(-1.0, 1.0), 1e-6, True),
-    ("box-entropy-half", lq_1d, BoxEntropy(-1.0, 1.0, scale=0.5), [3.0, 0.0], 0.0, box(-1.0, 1.0), 1e-6, True),
     ("box-entropy-asym-low", lq_1d, BoxEntropy(-1.0, 0.1), [-3.0, 0.0], -0.45, box(-1.0, 0.1), 1e-6, True),
     ("box-entropy-asym-high", lq_1d, BoxEntropy(0.1, 0.7), [3.0, 0.0], 0.4, box(0.1, 0.7), 1e-6, True),
     ("box-log-barrier", lq_1d, BoxLogBarrier(-1.0, 1.0), [3.0, 0.0], 0.0, box(-1.0, 1.0), 1e-6, True),
@@ -94,7 +96,7 @@ def test_matches_reference_constrained_optimum(name, make, mmap, x0, u_init, pro
     u_free, _ = reference_qp(problem, x0, m, lambda u: u)
     assert float(jnp.abs(u_ref - u_free).max()) > 1e-2, "the constraint should be active"
 
-    solver = MirrorILQR(problem, mmap, SolverOptions(tol=1e-9))
+    solver = MirrorILQR(problem, mmap, SolverOptions(tol=1e-6))
     sol = solver.solve(x0, jnp.full((T, m), u_init))
 
     assert sol.status == (Status.CONVERGED if converges else Status.MAX_ITER)
@@ -197,7 +199,7 @@ def test_proposition_5_on_a_full_horizon():
     x0 = jnp.array([1.0, -0.5])
     u = 0.6 * jnp.sin(jnp.arange(H, dtype=float))[:, None]  # interior, non-trivial
     states = problem.rollout(x0, u)
-    K_y, k_y, _, _, _ = MirrorILQR(problem, mmap).backward_pass(states, u, lam)
+    K_y, k_y, *_ = MirrorILQR(problem, mmap).backward_pass(states, u, lam)
 
     A, B = jax.jacrev(problem.dynamics, 0)(x0, u[0]), jax.jacrev(problem.dynamics, 1)(x0, u[0])
     Vx, Vxx = jax.grad(problem.final_cost)(states[-1]), jax.hessian(problem.final_cost)(states[-1])
@@ -219,7 +221,7 @@ def test_proposition_5_on_a_full_horizon():
 
 # ------------------------------------------------------------ natural stopping test ---
 
-NATURAL = SolverOptions(stopping="natural")
+NATURAL = SolverOptions(tol=1e-6)
 
 
 def test_natural_residual_matches_autodiff():
@@ -228,7 +230,7 @@ def test_natural_residual_matches_autodiff():
     controls = 0.9 * jnp.sin(jnp.arange(T, dtype=float))[:, None]
     gradient = jax.grad(lambda u: problem.total_cost(problem.rollout(x0, u), u))(controls)
     expected = jnp.max(jnp.abs(controls - jnp.clip(controls - gradient, -1.0, 1.0)))
-    *_, error = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), NATURAL).backward_pass(problem.rollout(x0, controls), controls, 1e-2)
+    *_, error, _ = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), NATURAL).backward_pass(problem.rollout(x0, controls), controls, 1e-2)
     assert expected > 1e-2
     np.testing.assert_allclose(error, expected, rtol=1e-12)
 
@@ -242,14 +244,77 @@ def test_natural_stopping_reaches_the_constrained_optimum():
 
 
 def test_natural_stopping_reports_frozen_controls():
-    """Controls exactly on the bound have ``Psi^{-1} = 0``. The paper's test reports
-    convergence at once; the natural residual sees that the gradient points into the box,
-    and since no step can move these controls the solve ends ``STALLED``."""
+    """Controls exactly on the bound have ``Psi^{-1} = 0``, so no step can move them. The
+    natural residual sees that the gradient points into the box: the solve ends ``STALLED``."""
     problem, x0 = lq_1d(), jnp.array([2.0, 0.0])
     plan = jnp.ones((T, 1))  # on the upper bound; the optimum pushes them down
-    paper = MirrorILQR(problem, BoxEntropy(-1.0, 1.0)).solve(x0, plan, validate=False)
-    natural = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), NATURAL).solve(x0, plan, validate=False)
-    assert paper.status == Status.CONVERGED and paper.error == 0.0
-    assert natural.status == Status.STALLED and natural.error > 1e-2 and int(natural.iterations) == 1
-    with pytest.raises(ValueError, match="stopping"):
-        SolverOptions(stopping="kkt")
+    sol = MirrorILQR(problem, BoxEntropy(-1.0, 1.0)).solve(x0, plan, validate=False)
+    assert sol.status == Status.STALLED and sol.error > 1e-2 and int(sol.iterations) == 1
+    assert SolverOptions().tol == 1e-4
+
+
+# ---------------------------------------------------------------- one-sided box map ---
+
+ONE_SIDED = SolverOptions(tol=1e-6, one_sided=True)
+
+
+def test_one_sided_map_identities():
+    box = BoxEntropy(jnp.array([-1.0, 0.5]), jnp.array([2.0, 3.0]))
+    u, up = jnp.array([1.3, 0.9]), jnp.array([True, False])
+    y = box.one_sided_grad(u, up)
+    np.testing.assert_allclose(box.one_sided_inverse(y, up), u, rtol=1e-13)
+    jacobian = jax.jacfwd(lambda v: box.one_sided_grad(v, up))(u)  # Psi of the one-sided map
+    np.testing.assert_allclose(box.one_sided_inv_hessian(u, up) @ jacobian, jnp.eye(2), atol=1e-13)
+    # on a bound: frozen when heading into it, free when heading away from it
+    on_bound = jnp.array([2.0, 0.5])
+    np.testing.assert_allclose(jnp.diag(box.one_sided_inv_hessian(on_bound, jnp.array([True, False]))), 0.0)
+    assert bool(jnp.all(jnp.diag(box.one_sided_inv_hessian(on_bound, jnp.array([False, True]))) > 1.0))
+    np.testing.assert_allclose(box.one_sided_inverse(box.one_sided_grad(on_bound, up), up), on_bound)
+
+
+def test_one_sided_releases_frozen_controls():
+    """Controls on the upper bound while the optimum is at the lower one: the two-sided map
+    cannot move them (``STALLED``); the one-sided map reaches the constrained optimum."""
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])
+    u_ref, _ = reference_qp(problem, x0, 1, box(-1.0, 1.0))
+    plan = jnp.ones((T, 1))
+    assert MirrorILQR(problem, BoxEntropy(-1.0, 1.0), NATURAL).solve(x0, plan, validate=False).status == Status.STALLED
+    for start in (plan, jnp.zeros((T, 1))):
+        sol = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), ONE_SIDED).solve(x0, start, validate=False)
+        assert sol.status == Status.CONVERGED and sol.error < 1e-6
+        np.testing.assert_allclose(sol.controls, u_ref, atol=1e-5)
+    with pytest.raises(ValueError, match="one-sided"):
+        MirrorILQR(problem, BoxLogBarrier(-1.0, 1.0), ONE_SIDED)
+
+
+def test_one_sided_polytope_map_identities():
+    polytope = PolytopeLogBarrier(jnp.array(POLYTOPE_G), jnp.array(POLYTOPE_H))
+    u, direction = jnp.array([0.3, -0.25]), jnp.array([1.0, 0.2])
+    ahead = polytope.heading(u, direction)
+    np.testing.assert_array_equal(ahead, jnp.array(POLYTOPE_G) @ direction > 0)
+    y = polytope.one_sided_grad(u, ahead)
+    np.testing.assert_allclose(polytope.one_sided_inverse(y, ahead, u), u, atol=1e-10)
+    jacobian = jax.jacfwd(lambda v: polytope.one_sided_grad(v, ahead))(u)
+    np.testing.assert_allclose(polytope.one_sided_inv_hessian(u, ahead) @ jacobian, jnp.eye(2), atol=1e-12)
+    # with every facet ahead it is the full map; with none it is the identity
+    everything, nothing = jnp.ones(8, bool), jnp.zeros(8, bool)
+    np.testing.assert_allclose(polytope.one_sided_grad(u, everything), polytope.grad(u), rtol=1e-14)
+    np.testing.assert_allclose(polytope.one_sided_grad(u, nothing), u)
+    # a step across a facet that is not ahead is shortened and stays strictly inside
+    outside = polytope.one_sided_inverse(jnp.array([-2.0, 0.0]), nothing, u)
+    assert bool(polytope.contains(outside)) and float(jnp.min(polytope.slack(outside))) > 0
+
+
+def test_one_sided_polytope_releases_controls_next_to_a_facet():
+    """A plan 1e-7 from the facet ``u1 <= 0.5`` while the optimum pushes ``u1`` down: the full
+    map cannot move it away within the iteration cap; the one-sided map reaches the optimum."""
+    problem, polytope = DoubleIntegrator().problem(), PolytopeLogBarrier(jnp.array(POLYTOPE_G), jnp.array(POLYTOPE_H))
+    x0, plan = jnp.array([1.6, 1.0, 0.0, 0.0]), jnp.tile(jnp.array([0.5 - 1e-7, 0.0]), (T, 1))
+    u_ref, _ = reference_qp(problem, x0, 2, polytope.project)
+    assert float(u_ref[0, 0]) < -0.4
+    full = MirrorILQR(problem, polytope, SolverOptions(max_iter=200)).solve(x0, plan)
+    assert full.status != Status.CONVERGED
+    sol = MirrorILQR(problem, polytope, SolverOptions(one_sided=True)).solve(x0, plan)
+    assert sol.status == Status.CONVERGED and int(sol.iterations) < 100
+    np.testing.assert_allclose(sol.controls, u_ref, atol=2e-3)
+    assert bool(jnp.all(jax.vmap(polytope.contains)(sol.controls)))

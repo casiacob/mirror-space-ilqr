@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from cases import CASES  # noqa: E402
 
-from msilqr import IPDDPOptions, Status, ipddp_mpc, mirror_mpc  # noqa: E402
+from msilqr import Status, ipddp_mpc, mirror_mpc  # noqa: E402
 
 
 def _run_method(fn, x0s, u_inits):
@@ -43,75 +43,48 @@ def _run_method(fn, x0s, u_inits):
     return stack, wall
 
 
-def run_case(
-    name: str,
-    box_scale: float | None = None,
-    ip_barrier_tol: float | None = None,
-    baseline: str = "paper",
-    ip_warm_start: bool = True,
-    stop: str = "native",
-) -> tuple[dict, dict]:
-    """Run one case. ``box_scale`` (cart-pole cases only), ``ip_barrier_tol`` (paper
-    baseline only) and ``baseline="fixed"`` select variants of the paper's setup. ``stop="kkt"`` stops
-    MS on the natural residual and IPDDP on the KKT error ``E_0`` (needs ``baseline="fixed"``)."""
+def run_case(name: str, warm_start: bool = True, one_sided: bool = False) -> tuple[dict, dict]:
+    """Run one case. ``warm_start=False`` starts every MPC solve of both methods from the
+    initial guess, and ``one_sided`` runs MS with the one-sided mirror maps."""
     case = CASES[name]
     inp = case.inputs()
     out = {"x0": np.asarray(inp.x0)}
-    info = {"case": name, "description": case.description, "n_init": int(inp.x0.shape[0]), "steps": inp.steps}
-    if box_scale is not None and name.startswith("cartpole"):
-        info["box_scale"] = box_scale
-    if case.ip_solver is not None:
-        info["ip_baseline"] = baseline
-        if baseline == "fixed":
-            info["ip_warm_start"] = ip_warm_start
-        elif ip_barrier_tol is not None:
-            info["ip_barrier_tol"] = ip_barrier_tol
+    info = {"case": name, "description": case.description, "n_init": int(inp.x0.shape[0]), "steps": inp.steps, "warm_start": warm_start}
 
-    ms = case.ms_solver(box_scale=box_scale) if "box_scale" in info else case.ms_solver()
-    if stop == "kkt":
-        if case.ip_solver is not None and baseline != "fixed":
-            raise ValueError("--stop kkt needs --baseline fixed")
-        info["stop"] = stop
-        ms = replace(ms, options=replace(ms.options, stopping="natural"))
-    res, wall = _run_method(lambda x0, u0: mirror_mpc(ms, x0, u0, inp.steps), inp.x0, inp.u_init)
+    ms = case.ms_solver()
+    if one_sided:
+        info["one_sided"] = True
+        ms = replace(ms, options=replace(ms.options, one_sided=True))
+    res, wall = _run_method(lambda x0, u0: mirror_mpc(ms, x0, u0, inp.steps, warm_start=warm_start), inp.x0, inp.u_init)
     out.update({f"ms_{k}": v for k, v in res.items()})
-    info["ms"] = {
+    info["ms"] = _summary(res, wall)
+
+    if case.ip_solver is not None:
+        ip = case.ip_solver()
+        res, wall = _run_method(
+            lambda x0, u0: ipddp_mpc(ip, x0, u0, inp.ip_slacks, inp.ip_duals, inp.steps, warm_start=warm_start), inp.x0, inp.u_init
+        )
+        out.update({f"ip_{k}": v for k, v in res.items()})
+        info["ip"] = _summary(res, wall)
+    return out, info
+
+
+def _summary(res: dict, wall: float) -> dict:
+    return {
         "wall_s": round(wall, 3),
         "iters_total": int(res["iterations"].sum()),
         "iters_max": int(res["iterations"].max()),
         "not_converged": int((res["status"] != 0).sum()),
+        "stalled": int((res["status"] == Status.STALLED).sum()),
     }
-    if stop == "kkt":
-        info["ms"]["stalled"] = int((res["status"] == Status.STALLED).sum())
-
-    if case.ip_solver is not None:
-        if baseline == "fixed":
-            ip, warm = case.ip_solver(IPDDPOptions(stopping="kkt" if stop == "kkt" else "barrier")), ip_warm_start
-        else:
-            ip = case.ip_solver(IPDDPOptions.paper(barrier_tol=ip_barrier_tol)) if "ip_barrier_tol" in info else case.ip_solver()
-            warm = False  # the paper's protocol: restart slacks, duals and mu at every step
-        res, wall = _run_method(
-            lambda x0, u0: ipddp_mpc(ip, x0, u0, inp.ip_slacks, inp.ip_duals, inp.steps, warm_start=warm), inp.x0, inp.u_init
-        )
-        out.update({f"ip_{k}": v for k, v in res.items()})
-        info["ip"] = {
-            "wall_s": round(wall, 3),
-            "iters_total": int(res["iterations"].sum()),
-            "iters_max": int(res["iterations"].max()),
-            "not_converged": int((res["status"] != 0).sum()),
-        }
-    return out, info
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Run the msilqr benchmark cases.")
     p.add_argument("--out", required=True)
     p.add_argument("--cases", nargs="*", default=list(CASES), choices=list(CASES))
-    p.add_argument("--box-scale", type=float, help="variant: cart-pole box-map scale (original 0.5; paper Table I: 1)")
-    p.add_argument("--ip-barrier-tol", type=float, help="variant: the paper's IPDDP also requires barrier parameter < this to stop")
-    p.add_argument("--baseline", choices=["paper", "fixed"], default="paper", help="interior-point baseline (default: as in the paper)")
-    p.add_argument("--ip-cold-start", action="store_true", help="fixed baseline: restart slacks, duals and mu every MPC step")
-    p.add_argument("--stop", choices=["native", "kkt"], default="native", help="kkt: MS natural residual, IPDDP KKT error E_0")
+    p.add_argument("--cold-start", action="store_true", help="start every MPC solve of both methods from the initial guess")
+    p.add_argument("--one-sided", action="store_true", help="MS with the one-sided mirror maps")
     args = p.parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
@@ -124,17 +97,16 @@ def main(argv=None) -> int:
     for name in args.cases:
         arrays, info = run_case(
             name,
-            box_scale=args.box_scale,
-            ip_barrier_tol=args.ip_barrier_tol,
-            baseline=args.baseline,
-            ip_warm_start=not args.ip_cold_start,
-            stop=args.stop,
+            warm_start=not args.cold_start,
+            one_sided=args.one_sided,
         )
         np.savez(os.path.join(args.out, name + ".npz"), **arrays)
         summary["cases"].append(info)
-        line = f"[run] {name:18s} MS iters {info['ms']['iters_total']:6d} (max {info['ms']['iters_max']:3d}, {info['ms']['wall_s']:.1f}s)"
-        if "ip" in info:
-            line += f" | IP iters {info['ip']['iters_total']:6d} (max {info['ip']['iters_max']:3d}, {info['ip']['wall_s']:.1f}s)"
+        line = "[run] " + f"{name:18s}"
+        for label, key in (("MS", "ms"), ("IP", "ip")):
+            if key in info:
+                r = info[key]
+                line += f" | {label} iters {r['iters_total']:6d} (max {r['iters_max']:4d}, not converged {r['not_converged']})"
         print(line, flush=True)
     with open(os.path.join(args.out, "summary.json"), "w") as f:
         json.dump(summary, f, indent=2)

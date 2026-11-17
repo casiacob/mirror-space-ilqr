@@ -39,7 +39,7 @@ class Status(enum.IntEnum):
     CONVERGED = 0  #: stopping measure below ``tol``
     MAX_ITER = 1  #: iteration cap reached (stopping measure finite, or ``inf`` if no iteration ran)
     NONFINITE = 2  #: stopping measure is NaN or inf (the iterate itself is the last accepted one)
-    STALLED = 3  #: no further step can register a cost decrease in float64 (``stopping="natural"`` only)
+    STALLED = 3  #: no further step can register a cost decrease in float64 (mirror-space solver)
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ class RegularizationOptions:
         reg_min, reg_max: ``lambda`` is clipped to this interval after every update.
     """
 
-    tol: float = 1e-6
+    tol: float = 1e-4
     max_iter: int = 1000
     reg_init: float = 1e-2
     reg_factor_init: float = 2.0

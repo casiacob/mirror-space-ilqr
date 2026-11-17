@@ -3,9 +3,9 @@
 Pavlov, Shames and Manzie, "Interior point differential dynamic programming", IEEE TCST
 29(6), 2021. Constraints ``g(x, u) <= 0`` become ``g(x, u) + s = 0`` with slacks ``s > 0``
 and duals ``z > 0``; each backward pass solves the perturbed KKT system of a barrier
-subproblem with parameter ``mu``, which decreases as the subproblems are solved.
-
-``IPDDPOptions.paper()`` reproduces the baseline of the paper's Fig. 4.
+subproblem with parameter ``mu``, which decreases as the subproblems are solved. One step
+size is used for controls, slacks and duals at all stages, accepted by a filter, and the
+solver stops on the KKT error of the original problem (see :class:`IPDDPOptions`).
 """
 
 from __future__ import annotations
@@ -36,58 +36,35 @@ __all__ = ["InteriorPointDDP", "IPDDPOptions", "IPDDPSolution"]
 
 @dataclass(frozen=True)
 class IPDDPOptions(RegularizationOptions):
-    """Options of :class:`InteriorPointDDP`; :meth:`paper` gives the baseline of the paper's Fig. 4.
+    """Options of :class:`InteriorPointDDP`.
 
-    The stopping and Levenberg-Marquardt fields are those of
-    :class:`~msilqr.RegularizationOptions`.
+    The solver stops once the KKT error of the original problem (``mu = 0``)
+    ``E_0 = max(|grad_u L|_inf / c, |g + s|_inf, |s z|_inf / c) < tol``, with the open-loop
+    gradient ``grad_u L`` of the Lagrangian ``J + sum_t z_t^T g_t`` and
+    ``c = max(1, mean(z) / 100)`` (IPOPT's scaling for large duals). ``E_0`` is zero exactly
+    at the KKT points; ``mu`` decreases down to ``tol / 10``. The stopping and
+    Levenberg-Marquardt fields are those of :class:`~msilqr.RegularizationOptions`.
 
     Attributes:
-        stopping: ``"barrier"``: stop once the barrier-subproblem residual
-            ``max(|Qhat_u|, |r_p|, |r_d|) < tol`` (and ``mu < barrier_tol``, if set).
-            ``"kkt"``: stop once the KKT error of the original problem (``mu = 0``)
-            ``E_0 = max(|grad_u L|_inf / c, |g + s|_inf, |s z|_inf / c) < tol``, with the
-            open-loop gradient ``grad_u L`` of the Lagrangian ``J + sum_t z_t^T g_t`` and
-            ``c = max(1, mean(z) / 100)`` (IPOPT's scaling for large duals). ``E_0`` is zero
-            exactly at the KKT points; ``barrier_tol`` is not used and ``mu`` decreases down
-            to ``tol / 10``. Needs ``line_search=True``.
-        barrier_tol: if set, additionally require ``mu < barrier_tol`` to stop (``None``:
-            stop on the barrier-subproblem residual alone, as the paper's baseline did).
-        line_search: one step size for all stages, slacks and duals, accepted by a filter
-            on (barrier cost, ``||g + s||_1``). ``False``: the paper's full step with
-            per-stage fraction-to-boundary factors, accepted when the barrier cost
-            decreases.
         max_backtracks: the line search tries ``alpha = 1, 1/2, ..., 2^-max_backtracks``.
-        barrier_init: initial barrier parameter. ``None`` uses the original rule
+        barrier_init: initial barrier parameter. ``None`` uses the rule
             ``mu_0 = J(u_0) / (T n_c)`` (Pavlov et al.).
-        barrier_init_fallback: ``mu_0`` used when the original rule gives ``mu_0 <= 0``
-            (non-positive costs; the original code then stalled).
+        barrier_init_fallback: ``mu_0`` used when that rule gives ``mu_0 <= 0``
+            (non-positive costs).
     """
 
-    barrier_tol: float | None = 1e-6
     barrier_init: float | None = None
     barrier_init_fallback: float = 1.0
-    line_search: bool = True
     max_backtracks: int = 10
-    stopping: str = "barrier"
 
     def __post_init__(self):
         super().__post_init__()
-        if self.stopping not in ("barrier", "kkt"):
-            raise ValueError(f'stopping must be "barrier" or "kkt", got {self.stopping!r}')
-        if self.stopping == "kkt" and not self.line_search:
-            raise ValueError('stopping="kkt" needs line_search=True (not the paper preset)')
-        for name in ("barrier_tol", "barrier_init", "barrier_init_fallback"):
+        for name in ("barrier_init", "barrier_init_fallback"):
             value = getattr(self, name)
             if value is not None and not value > 0:
                 raise ValueError(f"{name} must be > 0, got {value}")
         if not (isinstance(self.max_backtracks, int) and self.max_backtracks >= 0):
             raise ValueError(f"max_backtracks must be a non-negative integer, got {self.max_backtracks}")
-
-    @classmethod
-    def paper(cls, **overrides) -> IPDDPOptions:
-        """The baseline of the paper's Fig. 4: no line search or filter, and it stops on the
-        barrier-subproblem residual alone."""
-        return cls(**{"barrier_tol": None, "line_search": False, **overrides})
 
 
 class IPDDPSolution(NamedTuple):
@@ -97,7 +74,7 @@ class IPDDPSolution(NamedTuple):
     duals: jax.Array
     iterations: jax.Array
     barrier: jax.Array  #: final barrier parameter ``mu``
-    error: jax.Array  #: last stopping measure
+    error: jax.Array  #: last stopping measure (the KKT error ``E_0``)
     status: jax.Array  #: :class:`~msilqr.Status` code
 
 
@@ -158,14 +135,7 @@ def augmented_q(Qx, Qu, Qxx, Qxu, Quu, cx, cu, kkt: PerturbedKKT):
     )
 
 
-def fraction_to_boundary(value, direction, tau=0.995):
-    """Largest step in ``(0, 1]`` that keeps ``value + step * direction`` above
-    ``(1 - tau) * value`` (applied per stage, as in the original)."""
-    step = jnp.where(-tau * value / direction > 0.0, -tau * value / direction, 0)
-    return jnp.min(step, initial=1.0, where=step > 0)
-
-
-_TAU = 0.995  # fraction-to-boundary parameter of the line search (as in the paper's baseline)
+_TAU = 0.995  # fraction-to-boundary parameter of the line search
 
 
 class _Filter(NamedTuple):
@@ -223,14 +193,13 @@ class InteriorPointDDP:
 
     def backward_pass(self, states, controls, slacks, duals, barrier_param, reg_param):
         """Returns ``(k_u, k_z, k_s, K_u, K_z, K_s, dV, error, positive_definite, dV1, kkt_error)``,
-        where ``error`` is the barrier-subproblem residual, ``dV1`` the linear part of the model
-        decrease ``dV`` (for step sizes below 1), and ``kkt_error`` the unperturbed KKT error
-        ``E_0`` (``None`` unless ``stopping="kkt"``)."""
+        where ``error`` is the barrier-subproblem residual (it drives ``mu``), ``dV1`` the linear
+        part of the model decrease ``dV`` (for step sizes below 1), and ``kkt_error`` the
+        unperturbed KKT error ``E_0`` (the stopping measure)."""
         p, constraints = self.problem, self.constraints
-        kkt_mode = self.options.stopping == "kkt"
 
         def step(carry, inp):
-            Vx, Vxx, pos_def = carry[:3]
+            Vx, Vxx, pos_def, adjoint = carry
             state, control, slack, dual = inp
 
             e = expand_stage(p.dynamics, self._stage_lagrangian, state, control, dual)
@@ -261,19 +230,16 @@ class InteriorPointDDP:
             dV = k_u.T @ Qu + 0.5 * k_u.T @ Quu @ k_u
 
             error = jnp.hstack((Qu, kkt.rp, kkt.rd))
-            out = (k_u, k_z, k_s, K_u, K_z, K_s, dV, error, k_u.T @ Qu)
-            if kkt_mode:  # open-loop adjoint of the Lagrangian (e is its expansion): grad_u L = L_u + f_u^T l
-                adjoint = carry[3]
-                return (Vx, Vxx, pos_def, e.lx + e.fx.T @ adjoint), (*out, e.lu + e.fu.T @ adjoint)
-            return (Vx, Vxx, pos_def), out
+            # open-loop adjoint of the Lagrangian (e is its expansion): grad_u L = L_u + f_u^T l
+            out = (k_u, k_z, k_s, K_u, K_z, K_s, dV, error, k_u.T @ Qu, e.lu + e.fu.T @ adjoint)
+            return (Vx, Vxx, pos_def, e.lx + e.fx.T @ adjoint), out
 
         x_final = states[-1]
-        carry0 = (grad(p.final_cost, 0)(x_final), hessian(p.final_cost, 0)(x_final), jnp.bool_(1.0))
-        if kkt_mode:
-            carry0 = (*carry0, carry0[0])
-        (_, _, positive_definite, *_), out = jax.lax.scan(step, carry0, (states[:-1], controls, slacks, duals), reverse=True)
-        k_u, k_z, k_s, K_u, K_z, K_s, dV, err, dV1, *grad_lagrangian = out
-        kkt_error = self._kkt_error(grad_lagrangian[0], states, controls, slacks, duals) if kkt_mode else None
+        Vx_final = grad(p.final_cost, 0)(x_final)
+        carry0 = (Vx_final, hessian(p.final_cost, 0)(x_final), jnp.bool_(1.0), Vx_final)
+        (_, _, positive_definite, _), out = jax.lax.scan(step, carry0, (states[:-1], controls, slacks, duals), reverse=True)
+        k_u, k_z, k_s, K_u, K_z, K_s, dV, err, dV1, grad_lagrangian = out
+        kkt_error = self._kkt_error(grad_lagrangian, states, controls, slacks, duals)
         return k_u, k_z, k_s, K_u, K_z, K_s, jnp.sum(dV), jnp.max(jnp.abs(err)), positive_definite, jnp.sum(dV1), kkt_error
 
     def _kkt_error(self, grad_lagrangian, states, controls, slacks, duals):
@@ -284,28 +250,6 @@ class InteriorPointDDP:
         return jnp.maximum(jnp.maximum(stationarity, jnp.max(jnp.abs(primal))), jnp.max(slacks * duals) / scale)
 
     # ------------------------------------------------------------- forward pass ---
-
-    def forward_pass(self, states, controls, slacks, duals, k_u, k_s, k_z, K_u, K_s, K_z):
-        dynamics = self.problem.dynamics
-
-        def step(prev_state, inp):
-            state, control, slack, dual, kc, ks, kz, Kc, Ks, Kz = inp
-            dx = prev_state - state
-            control = control + kc + Kc @ dx
-
-            dual_direction = kz + Kz @ dx
-            dual = dual + fraction_to_boundary(dual, dual_direction) * dual_direction
-
-            slack_direction = ks + Ks @ dx
-            slack = slack + fraction_to_boundary(slack, slack_direction) * slack_direction
-
-            next_state = dynamics(prev_state, control)
-            feasible = jnp.logical_and(jnp.all(dual > 0), jnp.all(slack > 0))
-            return next_state, (next_state, control, slack, dual, feasible)
-
-        _, out = jax.lax.scan(step, states[0], (states[:-1], controls, slacks, duals, k_u, k_s, k_z, K_u, K_s, K_z))
-        new_states, new_controls, new_slacks, new_duals, feasible = out
-        return jnp.vstack((states[0], new_states)), new_controls, new_slacks, new_duals, jnp.all(feasible)
 
     def trial_step(self, states, controls, slacks, duals, k_u, k_s, k_z, K_u, K_s, K_z, alpha):
         """Closed-loop rollout with one step size ``alpha`` for controls, slacks and duals at
@@ -361,75 +305,11 @@ class InteriorPointDDP:
         return jnp.where(rule > 0, rule, opt.barrier_init_fallback)
 
     def _mu_floor(self) -> float:
-        """Smallest ``mu`` of the line-search solver and of the MPC warm starts."""
-        opt = self.options
-        if opt.stopping == "kkt" or opt.barrier_tol is None:
-            return opt.tol / 10.0
-        return opt.barrier_tol / 10.0
-
-    def _converged(self, err, barrier_param):
-        done = err < self.options.tol
-        if self.options.barrier_tol is not None and self.options.stopping == "barrier":
-            done = jnp.logical_and(done, barrier_param < self.options.barrier_tol)
-        return done
+        """Smallest ``mu`` of the solver and of the MPC warm starts."""
+        return self.options.tol / 10.0
 
     def _solve(self, x0, initial_controls, initial_slacks, initial_duals, barrier) -> IPDDPSolution:
-        if self.options.line_search:
-            return self._solve_line_search(x0, initial_controls, initial_slacks, initial_duals, barrier)
-        return self._solve_paper(x0, initial_controls, initial_slacks, initial_duals, barrier)
-
-    def _solve_paper(self, x0, initial_controls, initial_slacks, initial_duals, barrier) -> IPDDPSolution:
-        """The paper's baseline: full step, per-stage fraction-to-boundary, gain-ratio test."""
-        opt = self.options
-
-        def iteration(val):
-            states, controls, slacks, duals, reg_param, reg_factor, barrier_param, _, it = val
-            cost = self._barrier_total_cost(states, controls, slacks, barrier_param)
-            k_u, k_z, k_s, K_u, K_z, K_s, diff_cost, err, positive_definite, *_ = self.backward_pass(
-                states, controls, slacks, duals, barrier_param, reg_param
-            )
-            new = self.forward_pass(states, controls, slacks, duals, k_u, k_s, k_z, K_u, K_s, K_z)
-            new_states, new_controls, new_slacks, new_duals, _ = new
-            new_cost = self._barrier_total_cost(new_states, new_controls, new_slacks, barrier_param)
-
-            gain_ratio = (cost - new_cost) / (-diff_cost)
-            accept = jnp.logical_and(gain_ratio > 0.0, positive_definite)
-            reg_param, reg_factor = gain_ratio_update(reg_param, reg_factor, gain_ratio, accept, opt)
-            states, controls, slacks, duals = (
-                jnp.where(accept, a, b)
-                for a, b in zip((new_states, new_controls, new_slacks, new_duals), (states, controls, slacks, duals), strict=True)
-            )
-
-            # decrease the barrier parameter once the subproblem residual is small
-            barrier_param = jnp.where(
-                jnp.logical_and(err < 0.2 * barrier_param, positive_definite),
-                jnp.min(jnp.array([0.2 * barrier_param, barrier_param**1.2])),
-                barrier_param,
-            )
-            return states, controls, slacks, duals, reg_param, reg_factor, barrier_param, err, it + 1
-
-        def keep_going(val):
-            *_, barrier_param, err, it = val
-            return jnp.logical_and(jnp.logical_not(self._converged(err, barrier_param)), it < opt.max_iter)
-
-        states = rollout(self.problem.dynamics, x0, initial_controls)
-        init = (
-            states,
-            initial_controls,
-            initial_slacks,
-            initial_duals,
-            opt.reg_init,
-            opt.reg_factor_init,
-            self._initial_barrier(states, initial_controls, initial_slacks) if barrier is None else barrier,
-            jnp.inf,
-            0,
-        )
-        states, controls, slacks, duals, _, _, barrier, err, it = jax.lax.while_loop(keep_going, iteration, init)
-        return IPDDPSolution(states, controls, slacks, duals, it, barrier, err, termination_status(self._converged(err, barrier), err, it))
-
-    def _solve_line_search(self, x0, initial_controls, initial_slacks, initial_duals, barrier) -> IPDDPSolution:
-        """One step size for all stages, slacks and duals, accepted by a filter; stops only
-        once ``mu < barrier_tol`` (if set)."""
+        """One step size for all stages, slacks and duals, accepted by a filter."""
         opt = self.options
         mu_floor = self._mu_floor()
         size = opt.max_iter + 1  # the filter gains at most one point per iteration
@@ -482,21 +362,20 @@ class InteriorPointDDP:
             )
 
             # decrease mu once the barrier subproblem is solved (or its residual is already below
-            # tol, so a mu just above barrier_tol cannot stall), and restart the filter
+            # tol), and restart the filter
             decrease = jnp.logical_and(jnp.logical_or(err < 0.2 * mu, err < opt.tol), positive_definite)
             mu = jnp.where(decrease, jnp.maximum(mu_floor, jnp.minimum(0.2 * mu, mu**1.2)), mu)
             filt = jax.tree.map(lambda a, b: jnp.where(decrease, a, b), start_filter(states, controls, slacks, mu), filt)
-            if kkt_error is not None:
-                err = kkt_error  # stop on E_0 (at the same iterate); the barrier residual only drives mu
-            return states, controls, slacks, duals, reg, reg_factor, mu, err, it + 1, filt
+            # stop on E_0 (at the same iterate); the barrier residual only drives mu
+            return states, controls, slacks, duals, reg, reg_factor, mu, kkt_error, it + 1, filt
 
         def keep_going(val):
-            mu, err, it = val[6], val[7], val[8]
-            return jnp.logical_and(jnp.logical_not(self._converged(err, mu)), it < opt.max_iter)
+            err, it = val[7], val[8]
+            return jnp.logical_and(jnp.logical_not(err < opt.tol), it < opt.max_iter)
 
         states = rollout(self.problem.dynamics, x0, initial_controls)
         mu0 = self._initial_barrier(states, initial_controls, initial_slacks) if barrier is None else barrier
         filt = start_filter(states, initial_controls, initial_slacks, mu0)
         init = (states, initial_controls, initial_slacks, initial_duals, opt.reg_init, opt.reg_factor_init, mu0, jnp.inf, 0, filt)
         states, controls, slacks, duals, _, _, mu, err, it, _ = jax.lax.while_loop(keep_going, iteration, init)
-        return IPDDPSolution(states, controls, slacks, duals, it, mu, err, termination_status(self._converged(err, mu), err, it))
+        return IPDDPSolution(states, controls, slacks, duals, it, mu, err, termination_status(err < opt.tol, err, it))

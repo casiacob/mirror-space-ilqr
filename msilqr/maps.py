@@ -50,9 +50,16 @@ class MirrorMap(abc.ABC):
         """Whether ``u`` lies in the interior ``int(U)`` (a boolean scalar)."""
 
     def project(self, u: jax.Array) -> jax.Array:
-        """Euclidean projection of ``u`` onto the closed set ``U`` (used by the
-        ``stopping="natural"`` test of :class:`~msilqr.MirrorILQR`)."""
+        """Euclidean projection of ``u`` onto the closed set ``U`` (used by the stopping
+        test of :class:`~msilqr.MirrorILQR`)."""
         raise NotImplementedError(f"{type(self).__name__} has no projection")
+
+    #: whether the map has the one-sided variant used by ``SolverOptions(one_sided=True)``:
+    #: ``heading(u, direction)`` says which part of the boundary a control moving along
+    #: ``direction`` is heading towards, and ``one_sided_grad(u, heading)``,
+    #: ``one_sided_inverse(y, heading, u_ref)`` and ``one_sided_inv_hessian(u, heading)`` are
+    #: the map of that part alone.
+    has_one_sided = False
 
 
 def _as_bound(value):
@@ -86,35 +93,34 @@ def _check_box(low, high) -> None:
 class BoxEntropy(MirrorMap):
     r"""Entropy DGF of the box ``low < u < high`` (Table I, row "Box (entropy)").
 
-    ``psi(u) = scale * sum_i [(b_i - u_i) log(b_i - u_i) + (u_i - a_i) log(u_i - a_i)]``
+    ``psi(u) = sum_i [(b_i - u_i) log(b_i - u_i) + (u_i - a_i) log(u_i - a_i)]``
 
-    * mirror map   ``y = scale * log((u - a) / (b - u))``
-    * inverse      ``u = mu + rho * tanh(y / (2 scale))`` with ``mu = (a + b) / 2``,
+    * mirror map   ``y = log((u - a) / (b - u))``
+    * inverse      ``u = mu + rho * tanh(y / 2)`` with ``mu = (a + b) / 2``,
       ``rho = (b - a) / 2``
-    * ``Psi^{-1}(u) = diag((u - a)(b - u) / (2 rho scale))``
+    * ``Psi^{-1}(u) = diag((u - a)(b - u) / (2 rho))``
 
-    ``scale = 1`` is exactly the paper's Table I map. Any ``scale > 0`` gives a valid
-    Legendre function with the same constraint set but a different geometry: with the
-    paper's ``lambda * I`` damping in mirror coordinates (Sec. III-C) the scale changes
-    the iterates. The original cart-pole experiments used ``scale = 0.5``
-    (``y = 0.5 log(...)``, ``u = rho tanh(y)``).
+    Floating point: once ``|y| / 2`` exceeds about 19.06, ``tanh`` rounds to exactly 1 in
+    float64. Then ``mu + rho * tanh(.)`` evaluates to ``mu +- rho``, which for an asymmetric
+    box can differ from the bound by one rounding error, i.e. lie just OUTSIDE the box.
+    ``inverse`` therefore clips its result to ``[low, high]`` (a no-op for symmetric boxes),
+    and ``grad`` clips ``y`` to ``+-40`` instead of returning ``+-inf`` at the bound
+    (``tanh(20)`` is also exactly 1, and ``Psi^{-1} = 0`` at the bound makes the mirror-space
+    step zero there).
 
-    Floating point: once ``|y| / (2 scale)`` exceeds about 19.06, ``tanh`` rounds to
-    exactly 1 in float64. Then ``mu + rho * tanh(.)`` evaluates to ``mu +- rho``, which for
-    an asymmetric box can differ from the bound by one rounding error, i.e. lie just
-    OUTSIDE the box. ``inverse`` therefore clips its result to ``[low, high]`` (a no-op
-    for symmetric boxes), and ``grad`` clips ``y`` to ``+-40 * scale`` instead of
-    returning ``+-inf`` at the bound (``tanh(20)`` is also exactly 1, and
-    ``Psi^{-1} = 0`` at the bound makes the mirror-space step zero there).
+    One-sided variant (``SolverOptions(one_sided=True)``): a control heading up (``up``)
+    uses the entropy map of the upper bound alone, ``y = -log(b - u)`` with
+    ``Psi^{-1} = b - u``; one heading down uses ``y = log(u - a)`` with ``Psi^{-1} = u - a``.
+    Near the bound a control is heading to, this agrees with the two-sided map. A control on
+    a bound that heads back into the box is not frozen.
     """
 
     low: float | jax.Array
     high: float | jax.Array
-    scale: float = 1.0
+    has_one_sided = True
+    y_clip = 40.0
 
     def __post_init__(self):
-        if not self.scale > 0:
-            raise ValueError(f"scale must be positive, got {self.scale}")
         _init_box(self)
 
     @property
@@ -125,24 +131,20 @@ class BoxEntropy(MirrorMap):
     def rho(self):
         return 0.5 * (self.high - self.low)
 
-    @property
-    def y_clip(self) -> float:
-        return 40.0 * self.scale
-
     def grad(self, u):
-        y = self.scale * jnp.log((u - self.low) / (self.high - u))
+        y = jnp.log((u - self.low) / (self.high - u))
         return jnp.clip(y, -self.y_clip, self.y_clip)
 
     def inverse(self, y, u_ref=None):
-        u = self.mu + self.rho * jnp.tanh(y / (2 * self.scale))
+        u = self.mu + self.rho * jnp.tanh(y / 2)
         return jnp.clip(u, self.low, self.high)
 
     def inv_hessian(self, u):
-        diag = (u - self.low) * (self.high - u) / (2 * self.rho * self.scale)
+        diag = (u - self.low) * (self.high - u) / (2 * self.rho)
         return jnp.diag(jnp.atleast_1d(diag))
 
     def hessian(self, u):
-        diag = 2 * self.rho * self.scale / ((u - self.low) * (self.high - u))
+        diag = 2 * self.rho / ((u - self.low) * (self.high - u))
         return jnp.diag(jnp.atleast_1d(diag))
 
     def contains(self, u):
@@ -150,6 +152,21 @@ class BoxEntropy(MirrorMap):
 
     def project(self, u):
         return jnp.clip(u, self.low, self.high)
+
+    def heading(self, u, direction):
+        """Per coordinate: whether a control moving along ``direction`` heads to the upper bound."""
+        return direction >= 0.0
+
+    def one_sided_grad(self, u, up):
+        y = jnp.where(up, -jnp.log(self.high - u), jnp.log(u - self.low))
+        return jnp.clip(y, -700.0, 700.0)  # exp(-700) > 0 in float64
+
+    def one_sided_inverse(self, y, up, u_ref=None):
+        u = jnp.where(up, self.high - jnp.exp(-y), self.low + jnp.exp(y))
+        return jnp.clip(u, self.low, self.high)  # a step against the heading may reach the other bound
+
+    def one_sided_inv_hessian(self, u, up):
+        return jnp.diag(jnp.atleast_1d(jnp.where(up, self.high - u, u - self.low)))
 
 
 # --------------------------------------------------------------------------------------
@@ -307,6 +324,9 @@ class EuclideanBall(MirrorMap):
 # --------------------------------------------------------------------------------------
 
 
+_TAU = 0.995  # largest fraction of a slack that one step may use up (one-sided polytope map)
+
+
 def _softplus_inv(s):
     return s + jnp.log1p(-jnp.exp(-s))
 
@@ -328,12 +348,20 @@ class PolytopeLogBarrier(MirrorMap):
     128 steps. It does not raise on non-convergence (as in the original); for large
     mirror-space steps it can return NaN, which makes the solver reject that step. Use
     :meth:`inverse_residual` to check a result.
+
+    One-sided variant (``SolverOptions(one_sided=True)``): the barrier keeps only the facets
+    a control is heading towards (``G d > 0`` for its direction ``d``),
+    ``psi(u) = 0.5 u^T u - sum_{j ahead} log s_j(u)``. A control next to a facet that heads
+    back into the polytope is then not frozen. The facets left out are not guarded by the
+    map, so ``one_sided_inverse`` shortens a step that would use up more than 99.5 % of the
+    slack of one of them.
     """
 
     G: jax.Array
     h: jax.Array
     newton_tol: float = 1e-11
     newton_max_steps: int = 128
+    has_one_sided = True
 
     def slack(self, u):
         return self.h - self.G @ u
@@ -372,6 +400,40 @@ class PolytopeLogBarrier(MirrorMap):
         q0 = jnp.concatenate((u_ref, _softplus_inv(h - G @ u_ref)))
         sol = optx.root_find(residual, solver, q0, args=y, max_steps=self.newton_max_steps, throw=False)
         return sol.value[:n_u]
+
+    def heading(self, u, direction):
+        """Per facet: whether a control moving along ``direction`` heads towards it."""
+        return self.G @ direction > 0.0
+
+    def one_sided_grad(self, u, ahead):
+        return u + self.G.T @ jnp.where(ahead, 1.0 / self.slack(u), 0.0)
+
+    def one_sided_inv_hessian(self, u, ahead):
+        W = jnp.where(ahead, 1.0 / self.slack(u) ** 2, 0.0)
+        H = jnp.eye(u.shape[0]) + self.G.T @ (W[:, None] * self.G)
+        return jsc.linalg.solve(H, jnp.eye(u.shape[0]))
+
+    def one_sided_inverse(self, y, ahead, u_ref):
+        import optimistix as optx
+
+        n_u = y.shape[0]
+        G, h = self.G, self.h
+
+        def residual(q, y):  # as in `inverse`, with the facets that are not ahead left out
+            u, r = q[:n_u], q[n_u:]
+            s = jax.nn.softplus(r)
+            mirror_residual = u + G.T @ jnp.where(ahead, 1.0 / s, 0.0) - y
+            slack_residual = jnp.where(ahead, G @ u + s - h, r)
+            return jnp.concatenate((mirror_residual, slack_residual))
+
+        solver = optx.Newton(rtol=self.newton_tol, atol=self.newton_tol, norm=optx.rms_norm)
+        slack = self.slack(u_ref)
+        q0 = jnp.concatenate((u_ref, jnp.where(ahead, _softplus_inv(jnp.where(ahead, slack, 1.0)), 0.0)))
+        u = optx.root_find(residual, solver, q0, args=y, max_steps=self.newton_max_steps, throw=False).value[:n_u]
+        # fraction to the boundary of the facets the map does not guard
+        used = slack - self.slack(u)
+        limit = jnp.where(~ahead & (used > _TAU * slack), _TAU * slack / jnp.where(used > 0, used, 1.0), 1.0)
+        return u_ref + jnp.min(limit) * (u - u_ref)
 
     def inverse_residual(self, y, u):
         """``max |grad psi(u) - y|`` and ``min s(u)``: a returned inverse is valid only if
