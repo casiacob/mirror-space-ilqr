@@ -69,7 +69,7 @@ def test_box_entropy_saturation_is_finite():
     y_at_bound = mmap.grad(jnp.array(50.0))
     assert jnp.isfinite(y_at_bound) and y_at_bound == mmap.y_clip
     assert mmap.grad(jnp.array(-50.0)) == -mmap.y_clip
-    # the clip value maps exactly onto the bound, like +-inf did in the original code
+    # the clip value maps exactly onto the bound
     assert mmap.inverse(mmap.y_clip) == 50.0 and mmap.inverse(-mmap.y_clip) == -50.0
     assert mmap.inv_hessian(jnp.array(50.0))[0, 0] == 0.0
 
@@ -94,7 +94,7 @@ def test_box_saturation_stays_in_closed_box_for_asymmetric_bounds(cls, y_big):
             assert lo <= u <= hi
             assert jnp.isfinite(mmap.grad(u))
             assert mmap.inv_hessian(u)[0, 0] >= 0
-    # the reviewer's examples
+    # asymmetric boxes: the saturated value is exactly the bound
     assert BoxEntropy(0.1, 0.7).inverse(jnp.array(-40.0)) == 0.1
     assert BoxEntropy(-1.0, 0.1).inverse(jnp.array(40.0)) == 0.1
 

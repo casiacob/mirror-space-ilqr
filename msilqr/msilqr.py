@@ -53,7 +53,7 @@ class SolverOptions(RegularizationOptions):
             iteration each control uses the map of only the part of the boundary it is
             heading towards (along ``-Q_u``). It freezes a control on the boundary only if the
             gradient pushes it against the boundary, and moves it back into the set otherwise.
-            ``False`` uses the full map of the paper, which freezes a control on the boundary
+            ``False`` uses the full map, which freezes a control on the boundary
             whichever way the gradient points.
 
     See :class:`~msilqr.RegularizationOptions` for the other fields.

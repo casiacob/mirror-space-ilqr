@@ -48,7 +48,7 @@ class RegularizationOptions:
 
     Attributes:
         tol: stop when the solver's stopping measure falls below ``tol``.
-        max_iter: iteration cap (the original code had none and could hang).
+        max_iter: iteration cap.
         reg_init: initial regularization ``lambda``.
         reg_factor_init: initial increase factor ``nu`` of the gain-ratio rule.
         reg_min, reg_max: ``lambda`` is clipped to this interval after every update.

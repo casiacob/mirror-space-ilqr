@@ -5,7 +5,7 @@ Pavlov, Shames and Manzie, "Interior point differential dynamic programming", IE
 and duals ``z > 0``; each backward pass solves the perturbed KKT system of a barrier
 subproblem with parameter ``mu``, which decreases as the subproblems are solved. One step
 size is used for controls, slacks and duals at all stages, accepted by a filter, and the
-solver stops on the KKT error of the original problem (see :class:`IPDDPOptions`).
+solver stops on the KKT error of the constrained problem (see :class:`IPDDPOptions`).
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ __all__ = ["InteriorPointDDP", "IPDDPOptions", "IPDDPSolution"]
 class IPDDPOptions(RegularizationOptions):
     """Options of :class:`InteriorPointDDP`.
 
-    The solver stops once the KKT error of the original problem (``mu = 0``)
+    The solver stops once the KKT error of the constrained problem (``mu = 0``)
     ``E_0 = max(|grad_u L|_inf / c, |g + s|_inf, |s z|_inf / c) < tol``, with the open-loop
     gradient ``grad_u L`` of the Lagrangian ``J + sum_t z_t^T g_t`` and
     ``c = max(1, mean(z) / 100)`` (IPOPT's scaling for large duals). ``E_0`` is zero exactly
@@ -282,7 +282,7 @@ class InteriorPointDDP:
 
         The controls need not be feasible (infeasible variant), but slacks and duals must be
         strictly positive; concrete inputs are checked. ``barrier`` overrides the initial
-        ``mu`` (for warm starts); by default ``options.barrier_init`` or the original rule.
+        ``mu`` (for warm starts); by default ``options.barrier_init`` or the initial-barrier rule.
         """
         require_x64()
         check_trajectory_shapes(x0, controls, slacks, duals)

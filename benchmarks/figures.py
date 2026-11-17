@@ -8,8 +8,8 @@ Usage::
 Fig. 2: double integrator with polytopic constraints (case ``polytope``).
 Fig. 3: cart-pole swing-up with box constraints (case ``cartpole``).
 Fig. 4: iterations per MPC step, mirror-space (MS) vs interior-point (IP), averaged over
-        the 25 control seeds of the compare cases. As in the original scripts the
-        curves are smoothed with a trailing moving average over 10 MPC steps.
+        the 25 control seeds of the compare cases. The curves are smoothed with a
+        trailing moving average over 10 MPC steps.
 """
 
 from __future__ import annotations

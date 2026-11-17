@@ -1,4 +1,4 @@
-"""Closed loops record applied controls and follow the model."""
+"""MPC closed loops: model consistency, constraints, warm and cold starts."""
 
 import jax
 import jax.numpy as jnp

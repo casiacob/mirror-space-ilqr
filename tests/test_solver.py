@@ -121,7 +121,7 @@ def test_iteration_cap_and_status():
     [(Positivity(), 0.0), (BoxEntropy(0.0, 1.0), 0.0), (BoxEntropy(0.0, 1.0), 1.0), (BoxEntropy(-1.0, 1.0), 1.5)],
 )
 def test_rejects_initial_guess_outside_interior(mmap, u_bad):
-    """At a boundary point Psi^{-1} = 0, so the solver would 'converge' at once."""
+    """At a boundary point Psi^{-1} = 0, so the solver cannot move that control."""
     problem = lq_1d()
     u0 = jnp.full((T, 1), u_bad)
     with pytest.raises(ValueError, match="strictly inside"):
@@ -152,7 +152,7 @@ def test_validate_flag_and_eager_mpc_with_controls_on_the_bound():
 def test_rejects_bad_shapes():
     solver = MirrorILQR(lq_1d(), BoxEntropy(-1.0, 1.0))
     with pytest.raises(ValueError, match="x0"):
-        solver.solve(jnp.zeros((T + 1, 2)), jnp.zeros((T, 1)))  # old call style: states instead of x0
+        solver.solve(jnp.zeros((T + 1, 2)), jnp.zeros((T, 1)))  # a state trajectory in place of x0
     with pytest.raises(ValueError, match="controls"):
         solver.solve(jnp.zeros(2), jnp.zeros(T))
 
@@ -199,7 +199,7 @@ def test_proposition_5_on_a_full_horizon():
     x0 = jnp.array([1.0, -0.5])
     u = 0.6 * jnp.sin(jnp.arange(H, dtype=float))[:, None]  # interior, non-trivial
     states = problem.rollout(x0, u)
-    K_y, k_y, *_ = MirrorILQR(problem, mmap, SolverOptions(one_sided=False)).backward_pass(states, u, lam)  # the paper's map
+    K_y, k_y, *_ = MirrorILQR(problem, mmap, SolverOptions(one_sided=False)).backward_pass(states, u, lam)  # the full map
 
     A, B = jax.jacrev(problem.dynamics, 0)(x0, u[0]), jax.jacrev(problem.dynamics, 1)(x0, u[0])
     Vx, Vxx = jax.grad(problem.final_cost)(states[-1]), jax.hessian(problem.final_cost)(states[-1])
@@ -316,4 +316,26 @@ def test_one_sided_polytope_releases_controls_next_to_a_facet():
     sol = MirrorILQR(problem, polytope).solve(x0, plan)
     assert sol.status == Status.CONVERGED and int(sol.iterations) < 100
     np.testing.assert_allclose(sol.controls, u_ref, atol=2e-3)
+    assert bool(jnp.all(jax.vmap(polytope.contains)(sol.controls)))
+
+
+def test_weighted_polytope_map():
+    """``psi = 0.5 u^T u - weight * sum log s``: map identities, and the same optimum as weight 1."""
+    polytope = PolytopeLogBarrier(jnp.array(POLYTOPE_G), jnp.array(POLYTOPE_H), weight=1e-6)
+    u = jnp.array([0.3, -0.25])
+    np.testing.assert_allclose(jax.grad(polytope.psi)(u), polytope.grad(u), rtol=1e-12)
+    np.testing.assert_allclose(jax.jacfwd(polytope.grad)(u), polytope.hessian(u), rtol=1e-12)
+    np.testing.assert_allclose(polytope.inv_hessian(u) @ polytope.hessian(u), jnp.eye(2), atol=1e-12)
+    for target in (jnp.array([0.1, 0.2]), jnp.array([0.499999, 0.0]), jnp.array([0.35 - 1e-7, 0.35])):  # interior, facet, vertex
+        np.testing.assert_allclose(polytope.inverse(polytope.grad(target), u), target, atol=1e-9)
+    ahead = polytope.heading(u, jnp.array([1.0, 0.2]))
+    np.testing.assert_allclose(polytope.one_sided_inverse(polytope.one_sided_grad(u, ahead), ahead, u), u, atol=1e-10)
+    with pytest.raises(ValueError, match="weight"):
+        PolytopeLogBarrier(jnp.array(POLYTOPE_G), jnp.array(POLYTOPE_H), weight=0.0)
+
+    problem, x0 = DoubleIntegrator().problem(), jnp.array([0.2, -0.1, -0.1, 0.1])
+    u_ref, _ = reference_qp(problem, x0, 2, polytope.project)
+    sol = MirrorILQR(problem, polytope).solve(x0, jnp.zeros((T, 2)))
+    assert sol.status == Status.CONVERGED and int(sol.iterations) < 15
+    np.testing.assert_allclose(sol.controls, u_ref, atol=1e-3)
     assert bool(jnp.all(jax.vmap(polytope.contains)(sol.controls)))

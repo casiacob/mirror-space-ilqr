@@ -42,24 +42,21 @@ def _run_method(fn, x0s, u_inits):
     return stack, wall
 
 
-def run_case(name: str, warm_start: bool = False) -> tuple[dict, dict]:
-    """Run one case. By default every MPC solve of both methods starts from the initial
-    guess; ``warm_start=True`` starts it from the previous plan shifted by one step."""
+def run_case(name: str) -> tuple[dict, dict]:
+    """Run one case. Every MPC solve of both methods starts cold, from the initial guess."""
     case = CASES[name]
     inp = case.inputs()
     out = {"x0": np.asarray(inp.x0)}
-    info = {"case": name, "description": case.description, "n_init": int(inp.x0.shape[0]), "steps": inp.steps, "warm_start": warm_start}
+    info = {"case": name, "description": case.description, "n_init": int(inp.x0.shape[0]), "steps": inp.steps}
 
     ms = case.ms_solver()
-    res, wall = _run_method(lambda x0, u0: mirror_mpc(ms, x0, u0, inp.steps, warm_start=warm_start), inp.x0, inp.u_init)
+    res, wall = _run_method(lambda x0, u0: mirror_mpc(ms, x0, u0, inp.steps), inp.x0, inp.u_init)
     out.update({f"ms_{k}": v for k, v in res.items()})
     info["ms"] = _summary(res, wall)
 
     if case.ip_solver is not None:
         ip = case.ip_solver()
-        res, wall = _run_method(
-            lambda x0, u0: ipddp_mpc(ip, x0, u0, inp.ip_slacks, inp.ip_duals, inp.steps, warm_start=warm_start), inp.x0, inp.u_init
-        )
+        res, wall = _run_method(lambda x0, u0: ipddp_mpc(ip, x0, u0, inp.ip_slacks, inp.ip_duals, inp.steps), inp.x0, inp.u_init)
         out.update({f"ip_{k}": v for k, v in res.items()})
         info["ip"] = _summary(res, wall)
     return out, info
@@ -79,7 +76,6 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Run the msilqr benchmark cases.")
     p.add_argument("--out", required=True)
     p.add_argument("--cases", nargs="*", default=list(CASES), choices=list(CASES))
-    p.add_argument("--warm-start", action="store_true", help="start every MPC solve of both methods from the previous plan")
     args = p.parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
@@ -90,10 +86,7 @@ def main(argv=None) -> int:
         "cases": [],
     }
     for name in args.cases:
-        arrays, info = run_case(
-            name,
-            warm_start=args.warm_start,
-        )
+        arrays, info = run_case(name)
         np.savez(os.path.join(args.out, name + ".npz"), **arrays)
         summary["cases"].append(info)
         line = "[run] " + f"{name:18s}"

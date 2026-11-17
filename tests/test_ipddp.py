@@ -74,11 +74,6 @@ def test_backward_pass_gains_solve_the_perturbed_kkt_system():
     np.testing.assert_allclose(k_z[0], ff[m + nc :], rtol=1e-10, atol=1e-14)
     np.testing.assert_allclose(K_z[0], fb[m + nc :], rtol=1e-10, atol=1e-14)
 
-    # the original formula (S^{-1} instead of Sigma in the c_x term) gives a different gain
-    S_inv, Sigma = jnp.diag(1 / ss), jnp.diag(zz / ss)
-    K_original = jnp.linalg.solve(Quu + cu.T @ Sigma @ cu, -cu.T @ S_inv @ cx - Qux)
-    assert not jnp.allclose(K_original, fb[:m], rtol=1e-3)
-
 
 def polytope_solver(**options):
     return InteriorPointDDP(DoubleIntegrator().problem(), lambda x, u: G @ u - H, IPDDPOptions(**options))
@@ -104,12 +99,11 @@ def test_barrier_init_and_nonpositive_costs():
     system = DoubleIntegrator()
     shifted = OptimalControlProblem(system.problem().dynamics, lambda x, u: system.stage_cost(x, u) - 100.0, system.final_cost)
     reference = polytope_solver(tol=1e-8).solve(x0, u0, s0, z0)
-    for options in (dict(barrier_init=1.0), dict()):  # explicit, and the fallback of the original rule
+    for options in (dict(barrier_init=1.0), dict()):  # explicit, and the fallback of the initial-barrier rule
         ip = InteriorPointDDP(shifted, lambda x, u: G @ u - H, IPDDPOptions(tol=1e-8, **options))
         sol = ip.solve(x0, u0, s0, z0)
         assert sol.status == Status.CONVERGED
-        # same solution up to the interior-point accuracy at this tolerance (with mu_0 < 0
-        # the original rule stalled at controls ~0.01 instead of ~0.2-0.5)
+        # same solution up to the interior-point accuracy at this tolerance
         np.testing.assert_allclose(sol.controls, reference.controls, atol=1e-4)
 
 
@@ -199,7 +193,7 @@ def test_mpc_warm_and_cold(warm_start):
 
 
 def test_solve_inside_jit_with_constant_inputs():
-    """Concrete inputs closed over inside jit are still checked, without a tracer error."""
+    """Concrete inputs closed over inside jit are checked."""
     problem, x0 = lq_1d(), jnp.array([2.0, 0.0])
     u0, s0, z0 = jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2))
     s_bad = -s0

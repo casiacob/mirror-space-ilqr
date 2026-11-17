@@ -270,8 +270,7 @@ class EuclideanBall(MirrorMap):
       would round onto the sphere (where ``grad`` is infinite), and ``y @ y`` overflows
       for ``||y|| > 1e154``. So for large ``y`` it computes ``||y||`` without overflow and
       caps the radius of ``u`` at ``1 - 2^-49``. A tighter cap is not safe: the rounding
-      in ``u = y * (r / ||y||)`` and in ``u @ u`` can exceed a margin of a few ulps
-      (``1 - 2^-52`` put about 5 % of large random ``y`` on or outside the sphere).
+      in ``u = y * (r / ||y||)`` and in ``u @ u`` can exceed a margin of a few ulps.
     * Both branches of ``inverse`` are evaluated, so each is fed an input that keeps it
       finite, with finite derivatives, when it is not selected. Otherwise reverse-mode
       derivatives would be ``0 * inf = NaN`` at ``y = 0``.
@@ -329,26 +328,34 @@ _TAU = 0.995  # largest fraction of a slack that one step may use up (one-sided 
 
 @dataclass(frozen=True, eq=False)
 class PolytopeLogBarrier(MirrorMap):
-    r"""DGF of the polytope ``G u < h`` used in the paper's double-integrator example.
+    r"""DGF of the polytope ``G u < h``: a quadratic plus a weighted log barrier (Sec. V-a).
 
-    ``psi(u) = 0.5 u^T u - sum_j log s_j(u)`` with slack ``s(u) = h - G u`` (Sec. V-a):
+    ``psi(u) = 0.5 u^T u - weight * sum_j log s_j(u)`` with slack ``s(u) = h - G u``:
 
-    * mirror map ``y = u + G^T (1 / s(u))``
-    * ``Psi(u) = I + G^T diag(1 / s^2) G``
+    * mirror map ``y = u + weight * G^T (1 / s(u))``
+    * ``Psi(u) = I + weight * G^T diag(1 / s^2) G``
     * inverse ``grad psi*(y)``: no closed form; it is the minimizer of the strictly convex
       ``phi(u) = psi(u) - y^T u``, found with a damped Newton method in ``u`` from the warm
       start ``u_ref``.
 
-    Newton's direction is ``d = -Psi(u)^{-1} (grad psi(u) - y)`` with the decrement
-    ``lam = sqrt(d^T Psi(u) d)``, and the step is ``u + d / (1 + lam)``. ``phi`` is
-    self-concordant, so this step stays strictly inside the polytope and converges
-    quadratically; it stops once ``lam <= newton_tol`` or after ``newton_max_steps`` steps.
-    Every iterate is strictly feasible, also if the iteration stops early. Use
-    :meth:`inverse_residual` to check a result.
+    A small ``weight`` makes the map close to the identity in the interior, where the solver
+    then takes nearly undamped steps, and confines the barrier to within about
+    ``sqrt(weight)`` of a facet. The solver's damping ``lambda`` then has to fall far less
+    before a control can reach a facet.
+
+    Newton's direction is ``d = -Psi(u)^{-1} (grad psi(u) - y)``, and the step is
+    ``u + d / (1 + rho)`` with ``rho = ||diag(1 / s) G d||``, the length of ``d`` in the
+    barrier's local norm. Since ``rho / (1 + rho) < 1`` the step stays strictly inside the
+    polytope (the Dikin ellipsoid), and because the barrier is self-concordant ``phi``
+    cannot increase along it. Far from the facets ``rho`` is small and the step is the full
+    Newton step; convergence is quadratic. The iteration stops once the Newton decrement
+    ``sqrt(d^T Psi(u) d) <= newton_tol`` or after ``newton_max_steps`` steps. Every iterate
+    is strictly feasible, also if the iteration stops early. Use :meth:`inverse_residual`
+    to check a result.
 
     One-sided variant (the solver's default): the barrier keeps only the facets
     a control is heading towards (``G d > 0`` for its direction ``d``),
-    ``psi(u) = 0.5 u^T u - sum_{j ahead} log s_j(u)``. A control next to a facet that heads
+    ``psi(u) = 0.5 u^T u - weight * sum_{j ahead} log s_j(u)``. A control next to a facet that heads
     back into the polytope is then not frozen. The facets left out are not guarded by the
     map, so ``one_sided_inverse`` shortens a step that would use up more than 99.5 % of the
     slack of one of them.
@@ -356,24 +363,29 @@ class PolytopeLogBarrier(MirrorMap):
 
     G: jax.Array
     h: jax.Array
+    weight: float = 1.0
     newton_tol: float = 1e-11
     newton_max_steps: int = 128
     has_one_sided = True
+
+    def __post_init__(self):
+        if not self.weight > 0:
+            raise ValueError(f"weight must be positive, got {self.weight}")
 
     def slack(self, u):
         return self.h - self.G @ u
 
     def psi(self, u):
         s = self.slack(u)
-        return 0.5 * u.T @ u - jnp.sum(jnp.log(s))
+        return 0.5 * u.T @ u - self.weight * jnp.sum(jnp.log(s))
 
     def grad(self, u):
         s = self.slack(u)
-        return u + self.G.T @ (1.0 / s)
+        return u + self.G.T @ (self.weight / s)
 
     def hessian(self, u):
         s = self.slack(u)
-        W = 1.0 / s**2
+        W = self.weight / s**2
         return jnp.eye(u.shape[0]) + self.G.T @ (W[:, None] * self.G)
 
     def inv_hessian(self, u):
@@ -381,7 +393,7 @@ class PolytopeLogBarrier(MirrorMap):
         return jsc.linalg.solve(H, jnp.eye(u.shape[0]))
 
     def inverse(self, y, u_ref):
-        return self._newton_inverse(y, u_ref, jnp.ones_like(self.h))
+        return self._newton_inverse(y, u_ref, self.weight * jnp.ones_like(self.h))
 
     def _newton_inverse(self, y, u_ref, weights):
         """Minimizer of ``0.5 u^T u - sum_j weights_j log s_j(u) - y^T u`` by the damped Newton
@@ -396,16 +408,17 @@ class PolytopeLogBarrier(MirrorMap):
             hessian = eye + G.T @ ((weights / s**2)[:, None] * G)
             gradient = u + G.T @ (weights / s) - y
             d = -jsc.linalg.solve(hessian, gradient, assume_a="pos")
-            return d, jnp.sqrt(jnp.maximum(-gradient @ d, 0.0))
+            rho = jnp.linalg.norm(jnp.where(weights > 0, G @ d / s, 0.0))  # length of d in the barrier's norm
+            return d, rho, jnp.sqrt(jnp.maximum(-gradient @ d, 0.0))
 
         def solve(_, u0):
             def keep_going(carry):
-                _, _, decrement, step = carry
+                _, _, _, decrement, step = carry
                 return jnp.logical_and(decrement > self.newton_tol, step < self.newton_max_steps)
 
             def newton_step(carry):
-                u, d, decrement, step = carry
-                u = u + d / (1.0 + decrement)
+                u, d, rho, _, step = carry
+                u = u + d / (1.0 + rho)
                 return (u, *direction(u), step + 1)
 
             return jax.lax.while_loop(keep_going, newton_step, (u0, *direction(u0), 0))[0]
@@ -420,16 +433,16 @@ class PolytopeLogBarrier(MirrorMap):
         return self.G @ direction > 0.0
 
     def one_sided_grad(self, u, ahead):
-        return u + self.G.T @ jnp.where(ahead, 1.0 / self.slack(u), 0.0)
+        return u + self.G.T @ jnp.where(ahead, self.weight / self.slack(u), 0.0)
 
     def one_sided_inv_hessian(self, u, ahead):
-        W = jnp.where(ahead, 1.0 / self.slack(u) ** 2, 0.0)
+        W = jnp.where(ahead, self.weight / self.slack(u) ** 2, 0.0)
         H = jnp.eye(u.shape[0]) + self.G.T @ (W[:, None] * self.G)
         return jsc.linalg.solve(H, jnp.eye(u.shape[0]))
 
     def one_sided_inverse(self, y, ahead, u_ref):
         slack = self.slack(u_ref)
-        u = self._newton_inverse(y, u_ref, jnp.where(ahead, 1.0, 0.0))
+        u = self._newton_inverse(y, u_ref, jnp.where(ahead, self.weight, 0.0))
         # fraction to the boundary of the facets the map does not guard
         used = slack - self.slack(u)
         limit = jnp.where(~ahead & (used > _TAU * slack), _TAU * slack / jnp.where(used > 0, used, 1.0), 1.0)

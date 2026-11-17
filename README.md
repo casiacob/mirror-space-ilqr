@@ -39,6 +39,33 @@ For your own system, define `OptimalControlProblem(dynamics, stage_cost, final_c
 pick a constraint set: `BoxEntropy`, `BoxLogBarrier`, `Positivity`, `EuclideanBall` or
 `PolytopeLogBarrier`. The initial controls must lie strictly inside it.
 
+## Reproducing the figures
+
+The benchmark scripts need `matplotlib`:
+
+```bash
+pip install -e ".[benchmarks]"
+```
+
+Run the experiments, then draw the figures from their results:
+
+```bash
+python benchmarks/run.py --out results
+python benchmarks/figures.py --results results --out figures
+```
+
+`run.py` runs the model-predictive control loops (a few minutes on a laptop CPU) and
+writes one `.npz` file per case to `results/`. `figures.py` writes each figure to
+`figures/` as PDF and PNG:
+
+| File | Content |
+|---|---|
+| `fig2_double_integrator` | Double integrator with polytopic control constraints: positions and controls |
+| `fig3_cartpole` | Cart-pole swing-up with a bounded force: cart position, pole angle and control |
+| `fig4_iterations` | Iterations per MPC step, mirror-space iLQR against interior-point DDP, averaged over 25 random initial control sequences |
+
+`--cases` runs a subset, for example `--cases polytope cartpole`.
+
 ## License
 
 [MIT](LICENSE) © 2026 Casian Iacob and Hany Abdulsamad.
