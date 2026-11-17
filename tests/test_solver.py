@@ -142,9 +142,9 @@ def test_validate_flag_and_eager_mpc_with_controls_on_the_bound():
         solver.solve(x0, plan)
     assert solver.solve(x0, plan, validate=False).status == Status.CONVERGED
 
-    jitted = mirror_mpc(solver, x0, jnp.zeros((8, 1)), 3)
+    jitted = mirror_mpc(solver, x0, jnp.zeros((8, 1)), 3, warm_start=True)
     with jax.disable_jit():
-        eager = mirror_mpc(MirrorILQR(problem, BoxEntropy(-1.0, 1.0)), x0, jnp.zeros((8, 1)), 3)
+        eager = mirror_mpc(MirrorILQR(problem, BoxEntropy(-1.0, 1.0)), x0, jnp.zeros((8, 1)), 3, warm_start=True)
     assert jnp.all(eager.status == 0)
     np.testing.assert_allclose(eager.states, jitted.states, rtol=1e-12)
 
@@ -199,7 +199,7 @@ def test_proposition_5_on_a_full_horizon():
     x0 = jnp.array([1.0, -0.5])
     u = 0.6 * jnp.sin(jnp.arange(H, dtype=float))[:, None]  # interior, non-trivial
     states = problem.rollout(x0, u)
-    K_y, k_y, *_ = MirrorILQR(problem, mmap).backward_pass(states, u, lam)
+    K_y, k_y, *_ = MirrorILQR(problem, mmap, SolverOptions(one_sided=False)).backward_pass(states, u, lam)  # the paper's map
 
     A, B = jax.jacrev(problem.dynamics, 0)(x0, u[0]), jax.jacrev(problem.dynamics, 1)(x0, u[0])
     Vx, Vxx = jax.grad(problem.final_cost)(states[-1]), jax.hessian(problem.final_cost)(states[-1])
@@ -244,18 +244,18 @@ def test_natural_stopping_reaches_the_constrained_optimum():
 
 
 def test_natural_stopping_reports_frozen_controls():
-    """Controls exactly on the bound have ``Psi^{-1} = 0``, so no step can move them. The
-    natural residual sees that the gradient points into the box: the solve ends ``STALLED``."""
+    """With the full map, controls exactly on the bound have ``Psi^{-1} = 0``, so no step can
+    move them. The natural residual sees that the gradient points into the box: the solve ends ``STALLED``."""
     problem, x0 = lq_1d(), jnp.array([2.0, 0.0])
     plan = jnp.ones((T, 1))  # on the upper bound; the optimum pushes them down
-    sol = MirrorILQR(problem, BoxEntropy(-1.0, 1.0)).solve(x0, plan, validate=False)
+    sol = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), SolverOptions(one_sided=False)).solve(x0, plan, validate=False)
     assert sol.status == Status.STALLED and sol.error > 1e-2 and int(sol.iterations) == 1
     assert SolverOptions().tol == 1e-4
 
 
 # ---------------------------------------------------------------- one-sided box map ---
 
-ONE_SIDED = SolverOptions(tol=1e-6, one_sided=True)
+FULL_MAP = SolverOptions(tol=1e-6, one_sided=False)
 
 
 def test_one_sided_map_identities():
@@ -278,13 +278,12 @@ def test_one_sided_releases_frozen_controls():
     problem, x0 = lq_1d(), jnp.array([2.0, 0.0])
     u_ref, _ = reference_qp(problem, x0, 1, box(-1.0, 1.0))
     plan = jnp.ones((T, 1))
-    assert MirrorILQR(problem, BoxEntropy(-1.0, 1.0), NATURAL).solve(x0, plan, validate=False).status == Status.STALLED
+    assert MirrorILQR(problem, BoxEntropy(-1.0, 1.0), FULL_MAP).solve(x0, plan, validate=False).status == Status.STALLED
     for start in (plan, jnp.zeros((T, 1))):
-        sol = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), ONE_SIDED).solve(x0, start, validate=False)
+        sol = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), NATURAL).solve(x0, start, validate=False)
         assert sol.status == Status.CONVERGED and sol.error < 1e-6
         np.testing.assert_allclose(sol.controls, u_ref, atol=1e-5)
-    with pytest.raises(ValueError, match="one-sided"):
-        MirrorILQR(problem, BoxLogBarrier(-1.0, 1.0), ONE_SIDED)
+    assert SolverOptions().one_sided and not BoxLogBarrier(-1.0, 1.0).has_one_sided  # such maps keep the full map
 
 
 def test_one_sided_polytope_map_identities():
@@ -312,9 +311,9 @@ def test_one_sided_polytope_releases_controls_next_to_a_facet():
     x0, plan = jnp.array([1.6, 1.0, 0.0, 0.0]), jnp.tile(jnp.array([0.5 - 1e-7, 0.0]), (T, 1))
     u_ref, _ = reference_qp(problem, x0, 2, polytope.project)
     assert float(u_ref[0, 0]) < -0.4
-    full = MirrorILQR(problem, polytope, SolverOptions(max_iter=200)).solve(x0, plan)
+    full = MirrorILQR(problem, polytope, SolverOptions(max_iter=200, one_sided=False)).solve(x0, plan)
     assert full.status != Status.CONVERGED
-    sol = MirrorILQR(problem, polytope, SolverOptions(one_sided=True)).solve(x0, plan)
+    sol = MirrorILQR(problem, polytope).solve(x0, plan)
     assert sol.status == Status.CONVERGED and int(sol.iterations) < 100
     np.testing.assert_allclose(sol.controls, u_ref, atol=2e-3)
     assert bool(jnp.all(jax.vmap(polytope.contains)(sol.controls)))

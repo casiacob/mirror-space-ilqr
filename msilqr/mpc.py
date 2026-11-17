@@ -1,9 +1,9 @@
 """Receding-horizon (MPC) closed loops for both solvers.
 
 Each step solves the finite-horizon problem from the current state and applies the first
-control. With ``warm_start=True`` (the default) the next solve starts from the previous
-plan shifted by one step; with ``warm_start=False`` every solve starts from the initial
-guess passed to the loop.
+control. With ``warm_start=False`` (the default) every solve starts from the initial guess
+passed to the loop; with ``warm_start=True`` the next solve starts from the previous plan
+shifted by one step.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def _mirror_mpc_fn(solver, num_steps: int, warm_start: bool):
     return jax.jit(run)
 
 
-def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int, *, warm_start: bool = True) -> MPCResult:
+def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int, *, warm_start: bool = False) -> MPCResult:
     """Closed loop of :class:`~msilqr.msilqr.MirrorILQR`.
 
     Args:
@@ -60,8 +60,9 @@ def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int, *, warm
         x0: initial state ``(n,)``.
         u_init: initial control sequence ``(T, m)``, strictly feasible (checked).
         num_steps: number of MPC steps.
-        warm_start: start every solve after the first from the previous plan shifted by one
-            step (the last control repeated). ``False``: start every solve from ``u_init``.
+        warm_start: ``False`` (the default) starts every solve from ``u_init``. ``True``
+            starts every solve after the first from the previous plan shifted by one step
+            (the last control repeated).
     """
     check_trajectory_shapes(x0, u_init)
     x0, u_init = _as_float64(x0), _as_float64(u_init)
@@ -108,16 +109,18 @@ def _ipddp_mpc_fn(solver, num_steps: int, warm_start: bool):
 
 
 def ipddp_mpc(
-    solver, x0: jax.Array, u_init: jax.Array, slacks: jax.Array, duals: jax.Array, num_steps: int, *, warm_start: bool = True
+    solver, x0: jax.Array, u_init: jax.Array, slacks: jax.Array, duals: jax.Array, num_steps: int, *, warm_start: bool = False
 ) -> MPCResult:
     """Closed loop of :class:`~msilqr.ipddp.InteriorPointDDP`.
+
+    With ``warm_start=False`` (the default) every step starts from the given ``u_init``,
+    ``slacks`` and ``duals`` with the initial barrier rule.
 
     With ``warm_start=True`` every MPC step after the first starts from the shifted
     controls, slacks and duals of the previous plan, with the barrier parameter set to their
     average complementarity ``mean(s z)`` (at least the solver's smallest ``mu``), so the warm start
     lies near the central path. The first step starts from the given slacks and duals with
-    the initial barrier rule. With ``warm_start=False`` every step starts from the given
-    ``u_init``, ``slacks`` and ``duals`` with the initial barrier rule.
+    the initial barrier rule.
     """
     check_trajectory_shapes(x0, u_init, slacks, duals)
     x0, u_init, slacks, duals = (_as_float64(a) for a in (x0, u_init, slacks, duals))

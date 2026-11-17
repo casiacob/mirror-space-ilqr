@@ -48,18 +48,18 @@ class SolverOptions(RegularizationOptions):
     float64.
 
     Attributes:
-        one_sided: use the one-sided variant of the mirror map (maps with
-            ``has_one_sided``: :class:`~msilqr.BoxEntropy`, :class:`~msilqr.PolytopeLogBarrier`):
-            in every iteration each control uses the map of only the part of the boundary it
-            is heading towards (along ``-Q_u``). The full map freezes a control on the
-            boundary whichever way the gradient points; the one-sided map freezes it only if
-            the gradient pushes it against the boundary, and moves it back into the set
-            otherwise.
+        one_sided: use the one-sided variant of the mirror map where it has one
+            (:class:`~msilqr.BoxEntropy`, :class:`~msilqr.PolytopeLogBarrier`): in every
+            iteration each control uses the map of only the part of the boundary it is
+            heading towards (along ``-Q_u``). It freezes a control on the boundary only if the
+            gradient pushes it against the boundary, and moves it back into the set otherwise.
+            ``False`` uses the full map of the paper, which freezes a control on the boundary
+            whichever way the gradient points.
 
     See :class:`~msilqr.RegularizationOptions` for the other fields.
     """
 
-    one_sided: bool = False
+    one_sided: bool = True
 
 
 class Solution(NamedTuple):
@@ -158,8 +158,6 @@ class MirrorILQR:
     options: SolverOptions = field(default_factory=SolverOptions)
 
     def __post_init__(self):
-        if self.options.one_sided and not self.mirror_map.has_one_sided:
-            raise ValueError(f"{type(self.mirror_map).__name__} has no one-sided variant (one_sided=True)")
         object.__setattr__(self, "_solve_jit", jax.jit(self._solve))
 
     # -------------------------------------------------------------- backward pass ---
@@ -174,7 +172,7 @@ class MirrorILQR:
         each control heads towards (``mirror_map.heading``; ``None`` otherwise).
         """
         p, mmap = self.problem, self.mirror_map
-        one_sided = self.options.one_sided
+        one_sided = self.options.one_sided and mmap.has_one_sided
         Vx_final = grad(p.final_cost, 0)(states[-1])
         Vxx_final = hessian(p.final_cost, 0)(states[-1])
 

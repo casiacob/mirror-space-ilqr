@@ -54,7 +54,7 @@ class MirrorMap(abc.ABC):
         test of :class:`~msilqr.MirrorILQR`)."""
         raise NotImplementedError(f"{type(self).__name__} has no projection")
 
-    #: whether the map has the one-sided variant used by ``SolverOptions(one_sided=True)``:
+    #: whether the map has the one-sided variant that :class:`~msilqr.MirrorILQR` uses by default:
     #: ``heading(u, direction)`` says which part of the boundary a control moving along
     #: ``direction`` is heading towards, and ``one_sided_grad(u, heading)``,
     #: ``one_sided_inverse(y, heading, u_ref)`` and ``one_sided_inv_hessian(u, heading)`` are
@@ -108,7 +108,7 @@ class BoxEntropy(MirrorMap):
     (``tanh(20)`` is also exactly 1, and ``Psi^{-1} = 0`` at the bound makes the mirror-space
     step zero there).
 
-    One-sided variant (``SolverOptions(one_sided=True)``): a control heading up (``up``)
+    One-sided variant (the solver's default): a control heading up (``up``)
     uses the entropy map of the upper bound alone, ``y = -log(b - u)`` with
     ``Psi^{-1} = b - u``; one heading down uses ``y = log(u - a)`` with ``Psi^{-1} = u - a``.
     Near the bound a control is heading to, this agrees with the two-sided map. A control on
@@ -349,7 +349,7 @@ class PolytopeLogBarrier(MirrorMap):
     mirror-space steps it can return NaN, which makes the solver reject that step. Use
     :meth:`inverse_residual` to check a result.
 
-    One-sided variant (``SolverOptions(one_sided=True)``): the barrier keeps only the facets
+    One-sided variant (the solver's default): the barrier keeps only the facets
     a control is heading towards (``G d > 0`` for its direction ``d``),
     ``psi(u) = 0.5 u^T u - sum_{j ahead} log s_j(u)``. A control next to a facet that heads
     back into the polytope is then not frozen. The facets left out are not guarded by the

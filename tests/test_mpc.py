@@ -56,3 +56,6 @@ def test_cold_start_restarts_every_solve_from_the_initial_guess():
     state = runs["ms"][1].states[3]
     np.testing.assert_array_equal(runs["ms"][1].controls[3], ms.solve(state, u_init).controls[0])
     np.testing.assert_array_equal(runs["ip"][1].controls[3], ip.solve(runs["ip"][1].states[3], u_init, slacks, duals).controls[0])
+    # cold is the default
+    np.testing.assert_array_equal(mirror_mpc(ms, x0, u_init, 10).controls, runs["ms"][1].controls)
+    np.testing.assert_array_equal(ipddp_mpc(ip, x0, u_init, slacks, duals, 10).controls, runs["ip"][1].controls)

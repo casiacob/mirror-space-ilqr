@@ -45,15 +45,16 @@
   backward pass, and every constraint set has a `project` method. A solve ends with
   `Status.STALLED` once a rejected step predicts a decrease below `10ε|J|`, which float64
   cannot register.
-* `SolverOptions(one_sided=True)` (`BoxEntropy`, `PolytopeLogBarrier`; `run.py --one-sided`):
-  in every iteration each control uses the map of only the part of the boundary it is
-  heading towards: one bound of a box, or the facets ahead of it in a polytope. A control on
-  the boundary whose gradient points back into the set is then released instead of frozen.
+* One-sided mirror maps (`BoxEntropy`, `PolytopeLogBarrier`), used by default: in every
+  iteration each control uses the map of only the part of the boundary it is heading
+  towards: one bound of a box, or the facets ahead of it in a polytope. A control on the
+  boundary whose gradient points back into the set is then released instead of frozen.
+  `SolverOptions(one_sided=False)` gives the paper's full map.
 * `benchmarks/stopping.py` measures where the stopping test stops on the polytope problem
   against the exact optimum.
-* MPC loops record the applied controls. Both take `warm_start`: `True` starts each solve
-  from the previous plan shifted by one step, `False` from the initial guess
-  (`run.py --cold-start`).
+* MPC loops record the applied controls. Both take `warm_start`: `False` (the default)
+  starts each solve from the initial guess, `True` from the previous plan shifted by one
+  step (`run.py --warm-start`).
 * `BoxEntropy` has no `scale` any more: it is always the paper's Table I map (the original
   cart-pole scripts used half of it).
 * `pyproject.toml` with extras, CI (lint with a pinned ruff), figure generation, and tests:

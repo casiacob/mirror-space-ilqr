@@ -16,7 +16,6 @@ import os
 import platform
 import sys
 import time
-from dataclasses import replace
 
 import jax
 
@@ -43,18 +42,15 @@ def _run_method(fn, x0s, u_inits):
     return stack, wall
 
 
-def run_case(name: str, warm_start: bool = True, one_sided: bool = False) -> tuple[dict, dict]:
-    """Run one case. ``warm_start=False`` starts every MPC solve of both methods from the
-    initial guess, and ``one_sided`` runs MS with the one-sided mirror maps."""
+def run_case(name: str, warm_start: bool = False) -> tuple[dict, dict]:
+    """Run one case. By default every MPC solve of both methods starts from the initial
+    guess; ``warm_start=True`` starts it from the previous plan shifted by one step."""
     case = CASES[name]
     inp = case.inputs()
     out = {"x0": np.asarray(inp.x0)}
     info = {"case": name, "description": case.description, "n_init": int(inp.x0.shape[0]), "steps": inp.steps, "warm_start": warm_start}
 
     ms = case.ms_solver()
-    if one_sided:
-        info["one_sided"] = True
-        ms = replace(ms, options=replace(ms.options, one_sided=True))
     res, wall = _run_method(lambda x0, u0: mirror_mpc(ms, x0, u0, inp.steps, warm_start=warm_start), inp.x0, inp.u_init)
     out.update({f"ms_{k}": v for k, v in res.items()})
     info["ms"] = _summary(res, wall)
@@ -83,8 +79,7 @@ def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="Run the msilqr benchmark cases.")
     p.add_argument("--out", required=True)
     p.add_argument("--cases", nargs="*", default=list(CASES), choices=list(CASES))
-    p.add_argument("--cold-start", action="store_true", help="start every MPC solve of both methods from the initial guess")
-    p.add_argument("--one-sided", action="store_true", help="MS with the one-sided mirror maps")
+    p.add_argument("--warm-start", action="store_true", help="start every MPC solve of both methods from the previous plan")
     args = p.parse_args(argv)
 
     os.makedirs(args.out, exist_ok=True)
@@ -97,8 +92,7 @@ def main(argv=None) -> int:
     for name in args.cases:
         arrays, info = run_case(
             name,
-            warm_start=not args.cold_start,
-            one_sided=args.one_sided,
+            warm_start=args.warm_start,
         )
         np.savez(os.path.join(args.out, name + ".npz"), **arrays)
         summary["cases"].append(info)

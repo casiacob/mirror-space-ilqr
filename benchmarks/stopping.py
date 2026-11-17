@@ -151,12 +151,12 @@ def make_trace(problem, polytope, iters: int):
 
         def iteration(carry, _):
             states, controls, reg, reg_factor, cost = carry
-            K, k, predicted, positive_definite, natural_error, _ = solver.backward_pass(states, controls, reg)
+            K, k, predicted, positive_definite, natural_error, heading = solver.backward_pass(states, controls, reg)
             gradient = jax.grad(open_loop_cost, 1)(x0, controls)
             # Frank-Wolfe gap sum_t max_{v in U} <g_t, u_t - v>: an upper bound of J - J* (J convex)
             gap = jnp.sum(jnp.max(jnp.sum(gradient * controls, axis=1)[:, None] - gradient @ vertices.T, axis=1))
 
-            new_states, new_controls = solver.forward_pass(states, controls, K, k)
+            new_states, new_controls = solver.forward_pass(states, controls, K, k, heading)
             new_cost = problem.total_cost(new_states, new_controls)
             actual = new_cost - cost
             accept = jnp.logical_and(jnp.logical_and(actual < 0.0, predicted < 0.0), positive_definite)
