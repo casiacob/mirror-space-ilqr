@@ -124,10 +124,13 @@ def q_expansion(d: MirrorDerivatives, Vx, Vxx, reg):
 
 
 def feedback_gains(Qy, Qyy_hat, Qxy):
-    """``k = -Qhat_yy^{-1} Q_y``, ``K = -Qhat_yy^{-1} Q_xy^T``, and whether ``Qhat_yy > 0``."""
-    positive_definite = jnp.all(jnp.linalg.eigvalsh(Qyy_hat) > 0)
-    k = -jsc.linalg.solve(Qyy_hat, Qy)
-    K = -jsc.linalg.solve(Qyy_hat, Qxy.T)
+    """``k = -Qhat_yy^{-1} Q_y``, ``K = -Qhat_yy^{-1} Q_xy^T``, and whether ``Qhat_yy > 0``, from
+    one Cholesky factorization (zero gains if it fails, so the step is rejected cleanly)."""
+    factor = jnp.linalg.cholesky(Qyy_hat)  # NaN unless positive definite
+    positive_definite = jnp.all(jnp.isfinite(factor))
+    factor = jnp.where(positive_definite, factor, jnp.eye(Qy.shape[0]))
+    k = jnp.where(positive_definite, -jsc.linalg.cho_solve((factor, True), Qy), 0.0)
+    K = jnp.where(positive_definite, -jsc.linalg.cho_solve((factor, True), Qxy.T), 0.0)
     return k, K, positive_definite
 
 

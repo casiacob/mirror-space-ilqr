@@ -20,11 +20,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Newton inverse map of the polytope DGF (PolytopeLogBarrier)
-polytope = ["optimistix>=0.0.10"]
 # benchmark runner and figures
-benchmarks = ["optimistix>=0.0.10", "matplotlib>=3.8"]
-dev = ["optimistix>=0.0.10", "matplotlib>=3.8", "pytest>=8", "ruff>=0.5"]
+benchmarks = ["matplotlib>=3.8"]
+dev = ["matplotlib>=3.8", "pytest>=8", "ruff>=0.5"]
 
 [tool.setuptools]
 packages = ["msilqr"]

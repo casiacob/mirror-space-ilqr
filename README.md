@@ -14,7 +14,7 @@ Requires Python ≥ 3.12.
 ```bash
 git clone https://github.com/casiacob/mirror-space-ilqr
 cd mirror-space-ilqr
-pip install -e .            # or -e ".[polytope]" for polytope constraints
+pip install -e .
 ```
 
 ## Quickstart

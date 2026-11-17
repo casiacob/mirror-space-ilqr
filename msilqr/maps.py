@@ -327,10 +327,6 @@ class EuclideanBall(MirrorMap):
 _TAU = 0.995  # largest fraction of a slack that one step may use up (one-sided polytope map)
 
 
-def _softplus_inv(s):
-    return s + jnp.log1p(-jnp.exp(-s))
-
-
 @dataclass(frozen=True, eq=False)
 class PolytopeLogBarrier(MirrorMap):
     r"""DGF of the polytope ``G u < h`` used in the paper's double-integrator example.
@@ -339,14 +335,15 @@ class PolytopeLogBarrier(MirrorMap):
 
     * mirror map ``y = u + G^T (1 / s(u))``
     * ``Psi(u) = I + G^T diag(1 / s^2) G``
-    * inverse ``grad psi*(y)``: no closed form; solved with Newton's root-finding method
-      (Sec. V-a, [22]) from the warm start ``u_ref``.
+    * inverse ``grad psi*(y)``: no closed form; it is the minimizer of the strictly convex
+      ``phi(u) = psi(u) - y^T u``, found with a damped Newton method in ``u`` from the warm
+      start ``u_ref``.
 
-    The Newton solve reproduces the original implementation exactly: Newton on the
-    lifted system ``(u, r)`` with ``s = softplus(r)``, residuals
-    ``u + G^T / s - y`` and ``G u + s - h``, ``rtol = atol = 1e-11`` (RMS norm), at most
-    128 steps. It does not raise on non-convergence (as in the original); for large
-    mirror-space steps it can return NaN, which makes the solver reject that step. Use
+    Newton's direction is ``d = -Psi(u)^{-1} (grad psi(u) - y)`` with the decrement
+    ``lam = sqrt(d^T Psi(u) d)``, and the step is ``u + d / (1 + lam)``. ``phi`` is
+    self-concordant, so this step stays strictly inside the polytope and converges
+    quadratically; it stops once ``lam <= newton_tol`` or after ``newton_max_steps`` steps.
+    Every iterate is strictly feasible, also if the iteration stops early. Use
     :meth:`inverse_residual` to check a result.
 
     One-sided variant (the solver's default): the barrier keeps only the facets
@@ -384,22 +381,39 @@ class PolytopeLogBarrier(MirrorMap):
         return jsc.linalg.solve(H, jnp.eye(u.shape[0]))
 
     def inverse(self, y, u_ref):
-        import optimistix as optx
+        return self._newton_inverse(y, u_ref, jnp.ones_like(self.h))
 
-        n_u = y.shape[0]
-        G, h = self.G, self.h
+    def _newton_inverse(self, y, u_ref, weights):
+        """Minimizer of ``0.5 u^T u - sum_j weights_j log s_j(u) - y^T u`` by the damped Newton
+        method of the class docstring (differentiable in ``y`` through the root condition)."""
+        G, h, eye = self.G, self.h, jnp.eye(u_ref.shape[0])
 
-        def residual(q, y):
-            u, r = q[:n_u], q[n_u:]
-            s = jax.nn.softplus(r)
-            mirror_residual = u + G.T @ (1.0 / s) - y
-            slack_residual = G @ u + s - h
-            return jnp.concatenate((mirror_residual, slack_residual))
+        def residual(u):
+            return u + G.T @ (weights / (h - G @ u)) - y
 
-        solver = optx.Newton(rtol=self.newton_tol, atol=self.newton_tol, norm=optx.rms_norm)
-        q0 = jnp.concatenate((u_ref, _softplus_inv(h - G @ u_ref)))
-        sol = optx.root_find(residual, solver, q0, args=y, max_steps=self.newton_max_steps, throw=False)
-        return sol.value[:n_u]
+        def direction(u):
+            s = h - G @ u
+            hessian = eye + G.T @ ((weights / s**2)[:, None] * G)
+            gradient = u + G.T @ (weights / s) - y
+            d = -jsc.linalg.solve(hessian, gradient, assume_a="pos")
+            return d, jnp.sqrt(jnp.maximum(-gradient @ d, 0.0))
+
+        def solve(_, u0):
+            def keep_going(carry):
+                _, _, decrement, step = carry
+                return jnp.logical_and(decrement > self.newton_tol, step < self.newton_max_steps)
+
+            def newton_step(carry):
+                u, d, decrement, step = carry
+                u = u + d / (1.0 + decrement)
+                return (u, *direction(u), step + 1)
+
+            return jax.lax.while_loop(keep_going, newton_step, (u0, *direction(u0), 0))[0]
+
+        def tangent_solve(linear, b):
+            return jnp.linalg.solve(jax.jacobian(linear)(b), b)
+
+        return jax.lax.custom_root(residual, u_ref, solve, tangent_solve)
 
     def heading(self, u, direction):
         """Per facet: whether a control moving along ``direction`` heads towards it."""
@@ -414,22 +428,8 @@ class PolytopeLogBarrier(MirrorMap):
         return jsc.linalg.solve(H, jnp.eye(u.shape[0]))
 
     def one_sided_inverse(self, y, ahead, u_ref):
-        import optimistix as optx
-
-        n_u = y.shape[0]
-        G, h = self.G, self.h
-
-        def residual(q, y):  # as in `inverse`, with the facets that are not ahead left out
-            u, r = q[:n_u], q[n_u:]
-            s = jax.nn.softplus(r)
-            mirror_residual = u + G.T @ jnp.where(ahead, 1.0 / s, 0.0) - y
-            slack_residual = jnp.where(ahead, G @ u + s - h, r)
-            return jnp.concatenate((mirror_residual, slack_residual))
-
-        solver = optx.Newton(rtol=self.newton_tol, atol=self.newton_tol, norm=optx.rms_norm)
         slack = self.slack(u_ref)
-        q0 = jnp.concatenate((u_ref, jnp.where(ahead, _softplus_inv(jnp.where(ahead, slack, 1.0)), 0.0)))
-        u = optx.root_find(residual, solver, q0, args=y, max_steps=self.newton_max_steps, throw=False).value[:n_u]
+        u = self._newton_inverse(y, u_ref, jnp.where(ahead, 1.0, 0.0))
         # fraction to the boundary of the facets the map does not guard
         used = slack - self.slack(u)
         limit = jnp.where(~ahead & (used > _TAU * slack), _TAU * slack / jnp.where(used > 0, used, 1.0), 1.0)

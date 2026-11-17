@@ -50,6 +50,10 @@
   towards: one bound of a box, or the facets ahead of it in a polytope. A control on the
   boundary whose gradient points back into the set is then released instead of frozen.
   `SolverOptions(one_sided=False)` gives the paper's full map.
+* The polytope map's inverse is a damped Newton method in the control itself (step
+  `d / (1 + λ)` with the Newton decrement `λ`), which stays strictly inside the polytope;
+  it replaces the root-find on a lifted system, and `optimistix` is no longer needed.
+  The mirror-space gains come from one Cholesky factorization per stage.
 * `benchmarks/stopping.py` measures where the stopping test stops on the polytope problem
   against the exact optimum.
 * MPC loops record the applied controls. Both take `warm_start`: `False` (the default)
@@ -67,8 +71,9 @@
 * MIT license (Casian Iacob and Hany Abdulsamad), a citation block and a user-facing README;
   background material lives in `docs/` (this file, `PAPER_NOTES.md`, `AUDIT.md`).
 
-* The comparison cases run 25 seeds from the fixed initial state of `cartpole` and
-  `polytope`; seed `i` draws the first solve's controls with `PRNGKey(i)`. The original
-  scripts sampled 10 initial states and shared one control sequence.
+* The comparison cases run 25 seeds from one fixed initial state (the cart-pole's, and the
+  origin for the double integrator); seed `i` draws the initial controls with
+  `PRNGKey(i)`. The original scripts sampled 10 initial states and shared one control
+  sequence.
 * The bitwise regression gate against the original code (golden outputs, `regression.py`,
   the experiment scripts) is removed; it remains on `main`.

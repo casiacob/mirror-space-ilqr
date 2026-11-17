@@ -114,7 +114,7 @@ def polytope_inputs() -> Inputs:
 
 def polytope_compare_inputs() -> Inputs:
     horizon, nc = 15, len(POLYTOPE_H)
-    x0, u_init = seeded_runs(jnp.array([0.2, -0.1, -0.1, 0.1]), horizon, 2)
+    x0, u_init = seeded_runs(jnp.zeros(4), horizon, 2)  # the origin, the mean of the original comparison's initial states
     return Inputs(x0, u_init, steps=300, ip_slacks=0.1 * jnp.ones((horizon, nc)), ip_duals=0.01 * jnp.ones((horizon, nc)))
 
 
