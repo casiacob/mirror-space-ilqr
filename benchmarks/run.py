@@ -4,7 +4,6 @@ Usage (from the repository root)::
 
     python benchmarks/run.py --out results            # all cases
     python benchmarks/run.py --out results --cases cartpole polytope
-    python benchmarks/regression.py --new results --bitwise   # check against golden
 
 Writes ``<out>/<case>.npz`` and ``<out>/summary.json``.
 """
@@ -53,8 +52,7 @@ def run_case(
     stop: str = "native",
 ) -> tuple[dict, dict]:
     """Run one case. ``box_scale`` (cart-pole cases only), ``ip_barrier_tol`` (paper
-    baseline only) and ``baseline="fixed"`` select variants that differ from the original
-    experiments; keep the defaults to reproduce the golden results. ``stop="kkt"`` stops
+    baseline only) and ``baseline="fixed"`` select variants of the paper's setup. ``stop="kkt"`` stops
     MS on the natural residual and IPDDP on the KKT error ``E_0`` (needs ``baseline="fixed"``)."""
     case = CASES[name]
     inp = case.inputs()

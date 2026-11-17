@@ -105,8 +105,7 @@ class BoxEntropy(MirrorMap):
     OUTSIDE the box. ``inverse`` therefore clips its result to ``[low, high]`` (a no-op
     for symmetric boxes), and ``grad`` clips ``y`` to ``+-40 * scale`` instead of
     returning ``+-inf`` at the bound (``tanh(20)`` is also exactly 1, and
-    ``Psi^{-1} = 0`` at the bound makes the mirror-space step zero there). Both guards
-    leave the results of the original symmetric-box experiments bitwise unchanged.
+    ``Psi^{-1} = 0`` at the bound makes the mirror-space step zero there).
     """
 
     low: float | jax.Array
@@ -328,8 +327,7 @@ class PolytopeLogBarrier(MirrorMap):
     ``u + G^T / s - y`` and ``G u + s - h``, ``rtol = atol = 1e-11`` (RMS norm), at most
     128 steps. It does not raise on non-convergence (as in the original); for large
     mirror-space steps it can return NaN, which makes the solver reject that step. Use
-    :meth:`inverse_residual` to check a result. The regression benchmarks depend on this
-    exact solver: a mathematically cleaner damped Newton changes the golden results.
+    :meth:`inverse_residual` to check a result.
     """
 
     G: jax.Array

@@ -1,8 +1,4 @@
-"""The two systems of the paper's experiments (Sec. V).
-
-The expressions are written exactly as in the original example scripts so that the
-benchmarks reproduce the original results bitwise.
-"""
+"""The two systems of the paper's experiments (Sec. V)."""
 
 from __future__ import annotations
 

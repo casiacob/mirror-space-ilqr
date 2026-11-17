@@ -49,25 +49,18 @@
 
   `benchmarks/run.py --baseline fixed --stop kkt` runs the comparison with both.
 * MPC loops record the applied controls.
-* The regression gate also requires every MPC solve to converge (a result without status
-  fails) and checks the polytope iteration counts. In CI the regression test fails,
-  instead of skipping, when the original commit is missing, and lint runs with a pinned
-  ruff.
-* `pyproject.toml` with extras, a pinned lock file, CI, figure generation, and tests:
+* `pyproject.toml` with extras, CI (lint with a pinned ruff), figure generation, and tests:
   * map identities;
   * Lemma 3 against autodiff;
   * LQ problems for every map against reference solutions of the constrained problem;
   * Proposition 5 over a full horizon;
-  * IPDDP gains against a direct KKT solve;
-  * the gate's own failure detection;
-  * the bitwise regression.
+  * IPDDP gains against a direct KKT solve.
 
 * MIT license (Casian Iacob and Hany Abdulsamad), a citation block and a user-facing README;
-  background material lives in `docs/` (this file, `PAPER_NOTES.md`, `REGRESSION.md`,
-  `AUDIT.md`).
+  background material lives in `docs/` (this file, `PAPER_NOTES.md`, `AUDIT.md`).
 
-* The comparison cases draw each run's initial state and initial controls from its own
-  key (split from `PRNGKey(12)`); the original scripts shared one control sequence.
-
-Every other change is bitwise-neutral on the benchmarks; the regression test checks
-`cartpole` and `polytope`, which keep the original inputs.
+* The comparison cases run 25 seeds from the fixed initial state of `cartpole` and
+  `polytope`; seed `i` draws the first solve's controls with `PRNGKey(i)`. The original
+  scripts sampled 10 initial states and shared one control sequence.
+* The bitwise regression gate against the original code (golden outputs, `regression.py`,
+  the experiment scripts) is removed; it remains on `main`.

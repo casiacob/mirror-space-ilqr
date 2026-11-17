@@ -60,9 +60,7 @@ class IPDDPOptions(RegularizationOptions):
         barrier_init: initial barrier parameter. ``None`` uses the original rule
             ``mu_0 = J(u_0) / (T n_c)`` (Pavlov et al.).
         barrier_init_fallback: ``mu_0`` used when the original rule gives ``mu_0 <= 0``
-            (non-positive costs; the original code then stalled). Whenever the rule gives
-            a positive value it is used unchanged, so results with positive costs are
-            bitwise identical to the original.
+            (non-positive costs; the original code then stalled).
     """
 
     barrier_tol: float | None = 1e-6
@@ -88,7 +86,7 @@ class IPDDPOptions(RegularizationOptions):
     @classmethod
     def paper(cls, **overrides) -> IPDDPOptions:
         """The baseline of the paper's Fig. 4: no line search or filter, and it stops on the
-        barrier-subproblem residual alone (reproduced bitwise by the benchmarks)."""
+        barrier-subproblem residual alone."""
         return cls(**{"barrier_tol": None, "line_search": False, **overrides})
 
 
@@ -360,7 +358,7 @@ class InteriorPointDDP:
             return jnp.asarray(opt.barrier_init, dtype=jnp.float64)
         horizon, n_c = controls.shape[0], self.constraints(states[0], controls[0]).shape[0]
         rule = self._barrier_total_cost(states, controls, slacks, 0.0) / (horizon * n_c)
-        return jnp.where(rule > 0, rule, opt.barrier_init_fallback)  # bitwise-neutral when rule > 0
+        return jnp.where(rule > 0, rule, opt.barrier_init_fallback)
 
     def _mu_floor(self) -> float:
         """Smallest ``mu`` of the line-search solver and of the MPC warm starts."""
