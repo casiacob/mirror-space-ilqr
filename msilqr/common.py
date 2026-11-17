@@ -29,6 +29,7 @@ __all__ = [
     "check_trajectory_shapes",
     "require_x64",
     "check_slacks_duals",
+    "natural_residual",
 ]
 
 
@@ -38,6 +39,7 @@ class Status(enum.IntEnum):
     CONVERGED = 0  #: stopping measure below ``tol``
     MAX_ITER = 1  #: iteration cap reached (stopping measure finite, or ``inf`` if no iteration ran)
     NONFINITE = 2  #: stopping measure is NaN or inf (the iterate itself is the last accepted one)
+    STALLED = 3  #: no further step can register a cost decrease in float64 (``stopping="natural"`` only)
 
 
 @dataclass(frozen=True)
@@ -110,11 +112,12 @@ def expand_stage(dynamics: Callable, cost: Callable, x, u, *cost_args) -> StageE
     )
 
 
-def termination_status(converged, err, it):
+def termination_status(converged, err, it, stalled=False):
     """``CONVERGED`` if ``converged``; ``NONFINITE`` if at least one iteration ran and the
-    stopping measure is NaN/inf; ``MAX_ITER`` otherwise."""
+    stopping measure is NaN/inf; ``STALLED`` if ``stalled``; ``MAX_ITER`` otherwise."""
     nonfinite = jnp.logical_and(it > 0, jnp.logical_not(jnp.isfinite(err)))
-    return jnp.where(converged, Status.CONVERGED, jnp.where(nonfinite, Status.NONFINITE, Status.MAX_ITER))
+    otherwise = jnp.where(stalled, Status.STALLED, Status.MAX_ITER)
+    return jnp.where(converged, Status.CONVERGED, jnp.where(nonfinite, Status.NONFINITE, otherwise))
 
 
 def check_trajectory_shapes(x0, controls, *per_stage) -> None:
@@ -152,3 +155,14 @@ def as_float64(a):
     if isinstance(a, jax.core.Tracer):
         return a
     return jnp.asarray(a, dtype=jnp.float64)
+
+
+def natural_residual(controls, gradient, project: Callable[[jax.Array], jax.Array]):
+    """``max_t ||u_t - project(u_t - g_t)||_inf`` for the gradient ``g_t = dJ/du_t``.
+
+    ``project`` is the Euclidean projection onto the convex control set ``U``. The residual
+    is zero exactly at the first-order (KKT) points of ``min J`` subject to ``u_t in U``. For
+    a box it is ``median(u - b, g, u - a)`` per component: ``|g|``, or the distance to the
+    bound when the step ``u - g`` crosses it.
+    """
+    return jnp.max(jnp.abs(controls - jax.vmap(project)(controls - gradient)))

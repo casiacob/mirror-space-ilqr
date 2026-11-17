@@ -1,11 +1,8 @@
-"""Mathematically identical rewrites of the backward pass change the cart-pole results.
+"""Mathematically identical rewrites of the backward pass on ``cartpole-compare``.
 
-Variants of :class:`msilqr.MirrorILQR` on ``cartpole-compare`` (``docs/REGRESSION.md``,
-"Performance follow-ups"):
-
-* derivatives of all stages computed with ``jax.vmap`` before the backward scan,
-* one Cholesky factorization of ``Qhat_yy`` per stage instead of two LU solves,
-* the 10 closed loops batched with ``jax.vmap`` instead of a Python loop.
+* stage derivatives computed with ``jax.vmap`` before the backward scan;
+* one Cholesky factorization of ``Qhat_yy`` per stage instead of two LU solves;
+* the 10 closed loops batched with ``jax.vmap``.
 
 Usage: ``python benchmarks/experiments/rounding_sensitivity.py`` (~1 min).
 """
@@ -25,7 +22,7 @@ from jax import grad, hessian
 
 from cases import CASES, cartpole_ms_solver
 from msilqr import MirrorILQR
-from msilqr.mirror_ilqr import mirror_derivatives
+from msilqr.msilqr import mirror_derivatives
 from msilqr.mpc import _mirror_mpc_fn
 
 
@@ -82,8 +79,8 @@ def main():
     # batch the 10 closed loops with vmap instead of a Python loop
     inp = CASES["cartpole-compare"].inputs()
     fn = _mirror_mpc_fn(base, inp.steps)
-    loop = lambda: [fn(x0, inp.u_init) for x0 in inp.x0]  # noqa: E731
-    batched = jax.jit(jax.vmap(fn, in_axes=(0, None)))
+    loop = lambda: [fn(x0, u0) for x0, u0 in zip(inp.x0, inp.u_init, strict=True)]  # noqa: E731
+    batched = jax.jit(jax.vmap(fn))
     jax.block_until_ready(loop()), jax.block_until_ready(batched(inp.x0, inp.u_init))  # compile both
     t = time.perf_counter()
     jax.block_until_ready(loop())

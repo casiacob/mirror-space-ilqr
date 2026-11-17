@@ -1,29 +1,9 @@
 """Mirror-space iLQR (Sec. III-C of the paper).
 
-The constrained problem (1) is reparameterized with the mirror map ``u = grad psi*(y)``
-(problem (2)) and solved with iLQR in the unconstrained mirror controls ``y``:
-
-* derivatives under the mirror map, Lemma 3 / Prop. 4 with the Gauss-Newton
-  approximation (12): ``Q_y = Psi^{-1} Q_u``, ``Q_xy = Q_xu Psi^{-1}``,
-  ``Q_yy = Psi^{-1} Q_uu Psi^{-1}`` (only derivatives of ``psi``, never of
-  ``grad psi*``);
-* Levenberg-Marquardt regularization ``Qhat_yy = Q_yy + lambda I`` adapted with the
-  gain-ratio rule of Madsen, Nielsen and Tingleff ([37], Eq. 2.21);
-* value recursion (13) using ``Qhat_yy`` throughout; the summed ``Delta V`` is the
-  predicted cost change in the gain ratio;
-* forward rollout (14): ``y_t = ybar_t + k_t + K_t dx_t``, ``u_t = grad psi*(y_t)`` with
-  ``ybar_t = grad psi(ubar_t)``, so every iterate is feasible.
-
-The solver stops when ``max_t |Q_y,t|`` (the mirror-space Hamiltonian gradient, evaluated
-in the backward pass of the current iterate) falls below ``tol``, or after ``max_iter``
-iterations.
-
-Numerical reproducibility: the floating-point operations follow the original
-implementation (commit effb14c) one to one, which the regression benchmarks check
-bitwise. MPC closed loops on the cart-pole are chaotically sensitive to rounding, so
-even mathematically identical rewrites (Cholesky instead of LU, derivatives vmapped
-over the horizon) change iteration counts; see ``docs/REGRESSION.md`` before
-"optimizing" this module.
+iLQR in the unconstrained mirror controls ``y = grad psi(u)``, so every iterate is
+feasible. The derivatives follow Lemma 3 and Prop. 4 with the Gauss-Newton
+approximation (12), steps are damped with ``Q_yy + lambda I``, and the rollout (14) maps
+the new mirror controls back with ``u = grad psi*(y)``.
 """
 
 from __future__ import annotations
@@ -36,13 +16,14 @@ import jax.numpy as jnp
 import jax.scipy as jsc
 from jax import grad, hessian
 
-from msilqr._common import (
+from msilqr.common import (
     RegularizationOptions,
     Status,
     as_float64,
     check_trajectory_shapes,
     expand_stage,
     gain_ratio_update,
+    natural_residual,
     require_x64,
     termination_status,
 )
@@ -56,9 +37,26 @@ __all__ = ["MirrorILQR", "SolverOptions", "Solution", "Status"]
 class SolverOptions(RegularizationOptions):
     """Options of :class:`MirrorILQR` (defaults reproduce the paper's experiments).
 
-    The stopping measure is ``max_t |Q_y,t|``; see
-    :class:`~msilqr.RegularizationOptions` for the fields.
+    Attributes:
+        stopping: ``"mirror"`` (the paper's test): stop once ``max_t |Q_y,t| < tol``.
+            ``Q_y = Psi^{-1} Q_u`` vanishes at every saturated control, whichever way the
+            gradient points. ``"natural"``: stop once the natural residual
+            ``max_t ||u_t - Pi_U(u_t - dJ/du_t)||_inf < tol``, which is zero exactly at the KKT
+            points of the constrained problem (``dJ/du_t`` from an adjoint sweep in the
+            backward pass, ``Pi_U`` is ``mirror_map.project``). The solve also ends, with
+            ``Status.STALLED``, when a step is rejected whose predicted cost decrease is below
+            ``10 eps |J|``: a larger ``lambda`` only shrinks it, so no later step at this
+            iterate can register a decrease in float64.
+
+    See :class:`~msilqr.RegularizationOptions` for the other fields.
     """
+
+    stopping: str = "mirror"
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.stopping not in ("mirror", "natural"):
+            raise ValueError(f'stopping must be "mirror" or "natural", got {self.stopping!r}')
 
 
 class Solution(NamedTuple):
@@ -69,7 +67,7 @@ class Solution(NamedTuple):
     cost: jax.Array  #: total cost ``J`` of the returned trajectory
     iterations: jax.Array  #: number of iterations (backward + forward pass), incl. rejected ones
     reg: jax.Array  #: final Levenberg-Marquardt parameter
-    error: jax.Array  #: last stopping measure ``max_t |Q_y,t|``
+    error: jax.Array  #: last stopping measure: ``max_t |Q_y,t|`` or the natural residual
     status: jax.Array  #: :class:`Status` code
 
 
@@ -83,6 +81,8 @@ class MirrorDerivatives(NamedTuple):
     cxx: jax.Array
     cyy: jax.Array
     cxy: jax.Array
+    cu: jax.Array  #: ``c_u`` (control space, for the natural residual)
+    fu: jax.Array  #: ``f_u`` (control space, for the natural residual)
 
 
 def mirror_derivatives(problem: OptimalControlProblem, mirror_map: MirrorMap, x, u) -> MirrorDerivatives:
@@ -101,6 +101,8 @@ def mirror_derivatives(problem: OptimalControlProblem, mirror_map: MirrorMap, x,
         cxx=e.lxx,
         cyy=Psi_inv @ e.luu @ Psi_inv,
         cxy=e.lxu @ Psi_inv,
+        cu=e.lu,
+        fu=e.fu,
     )
 
 
@@ -159,22 +161,29 @@ class MirrorILQR:
 
         Returns ``(K, k, dV, positive_definite, error)``: feedback and feedforward gains
         in mirror coordinates, the predicted cost change ``sum_t Delta V_t``, whether
-        every ``Qhat_yy,t`` was positive definite, and ``max_t |Q_y,t|``.
+        every ``Qhat_yy,t`` was positive definite, and the stopping measure (``max_t |Q_y,t|``
+        or the natural residual, see :class:`SolverOptions`).
         """
         p = self.problem
+        natural = self.options.stopping == "natural"
         Vx_final = grad(p.final_cost, 0)(states[-1])
         Vxx_final = hessian(p.final_cost, 0)(states[-1])
 
         def step(carry, inp):
-            Vx, Vxx = carry
+            Vx, Vxx = carry[:2]
             d = mirror_derivatives(p, self.mirror_map, *inp)
             Qx, Qy, Qxx, Qyy_hat, Qxy = q_expansion(d, Vx, Vxx, reg)
             k, K, positive_definite = feedback_gains(Qy, Qyy_hat, Qxy)
             Vx, Vxx, dV = value_update(Qx, Qy, Qxx, Qyy_hat, Qxy, k, K)
+            if natural:  # open-loop adjoint: l_t = c_x + f_x^T l_{t+1}, dJ/du_t = c_u + f_u^T l_{t+1}
+                adjoint = carry[2]
+                return (Vx, Vxx, d.cx + d.fx.T @ adjoint), (K, k, dV, positive_definite, d.cu + d.fu.T @ adjoint)
             return (Vx, Vxx), (K, k, dV, positive_definite, Qy)
 
-        _, (K, k, dV, positive_definite, Qy) = jax.lax.scan(step, (Vx_final, Vxx_final), (states[:-1], controls), reverse=True)
-        return K, k, jnp.sum(dV), jnp.all(positive_definite), jnp.max(jnp.abs(Qy))
+        init = (Vx_final, Vxx_final, Vx_final) if natural else (Vx_final, Vxx_final)
+        _, (K, k, dV, positive_definite, g) = jax.lax.scan(step, init, (states[:-1], controls), reverse=True)
+        error = natural_residual(controls, g, self.mirror_map.project) if natural else jnp.max(jnp.abs(g))
+        return K, k, jnp.sum(dV), jnp.all(positive_definite), error
 
     # --------------------------------------------------------------- forward pass ---
 
@@ -233,11 +242,11 @@ class MirrorILQR:
         states = rollout(self.problem.dynamics, x0, controls)
 
         def keep_going(carry):
-            *_, it, err = carry
-            return jnp.logical_and(jnp.logical_not(err < opt.tol), it < opt.max_iter)
+            *_, it, err, stalled = carry
+            return jnp.logical_and(jnp.logical_and(jnp.logical_not(err < opt.tol), it < opt.max_iter), jnp.logical_not(stalled))
 
         def iteration(carry):
-            states, controls, reg, reg_factor, cost, it, _ = carry
+            states, controls, reg, reg_factor, cost, it, _, stalled = carry
             K, k, predicted, positive_definite, err = self.backward_pass(states, controls, reg)
             new_states, new_controls = self.forward_pass(states, controls, K, k)
             new_cost = total_cost(new_states, new_controls)
@@ -246,12 +255,24 @@ class MirrorILQR:
             gain_ratio = actual / predicted
             accept = jnp.logical_and(jnp.logical_and(actual < 0.0, predicted < 0.0), positive_definite)
             reg, reg_factor = gain_ratio_update(reg, reg_factor, gain_ratio, accept, opt)
+            if opt.stopping == "natural":  # a rejected step too small to register in float64
+                floor = 10.0 * jnp.finfo(cost.dtype).eps * jnp.abs(cost)
+                stalled = jnp.logical_and(jnp.logical_and(~accept, positive_definite), jnp.abs(predicted) <= floor)
 
             states = jnp.where(accept, new_states, states)
             controls = jnp.where(accept, new_controls, controls)
             cost = jnp.where(accept, new_cost, cost)
-            return states, controls, reg, reg_factor, cost, it + 1, err
+            return states, controls, reg, reg_factor, cost, it + 1, err, stalled
 
-        init = (states, controls, jnp.array(opt.reg_init), jnp.array(opt.reg_factor_init), total_cost(states, controls), 0, jnp.inf)
-        states, controls, reg, _, cost, it, err = jax.lax.while_loop(keep_going, iteration, init)
-        return Solution(states, controls, cost, it, reg, err, termination_status(err < opt.tol, err, it))
+        init = (
+            states,
+            controls,
+            jnp.array(opt.reg_init),
+            jnp.array(opt.reg_factor_init),
+            total_cost(states, controls),
+            0,
+            jnp.inf,
+            jnp.array(False),
+        )
+        states, controls, reg, _, cost, it, err, stalled = jax.lax.while_loop(keep_going, iteration, init)
+        return Solution(states, controls, cost, it, reg, err, termination_status(err < opt.tol, err, it, stalled))

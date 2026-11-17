@@ -7,7 +7,17 @@ import pytest
 import scipy.optimize
 from test_solver import T, box, lq_1d, reference_qp
 
-from msilqr import BoxEntropy, DoubleIntegrator, InteriorPointDDP, IPDDPOptions, MirrorILQR, OptimalControlProblem, Status, ipddp_mpc
+from msilqr import (
+    BoxEntropy,
+    DoubleIntegrator,
+    InteriorPointDDP,
+    IPDDPOptions,
+    MirrorILQR,
+    OptimalControlProblem,
+    PolytopeLogBarrier,
+    Status,
+    ipddp_mpc,
+)
 from msilqr.systems import POLYTOPE_G, POLYTOPE_H
 
 G, H = jnp.array(POLYTOPE_G), jnp.array(POLYTOPE_H)
@@ -213,3 +223,54 @@ def test_barrier_override_and_options():
     assert paper.barrier_tol is None and not paper.line_search and IPDDPOptions().line_search
     with pytest.raises(ValueError):
         IPDDPOptions(max_backtracks=-1)
+
+
+# ----------------------------------------------------------------- stopping tests ---
+
+
+def test_polytope_projection_matches_scipy():
+    polytope, Gn, Hn = PolytopeLogBarrier(G, H), np.asarray(G), np.asarray(H)
+    for p in np.random.default_rng(0).normal(scale=float(np.max(Hn)), size=(20, 2)):
+        ref = scipy.optimize.minimize(
+            lambda v, p=p: 0.5 * np.sum((v - p) ** 2), p, jac=lambda v, p=p: v - p, method="SLSQP",
+            constraints=[{"type": "ineq", "fun": lambda v: Hn - Gn @ v}], options={"ftol": 1e-15},
+        )  # fmt: skip
+        np.testing.assert_allclose(polytope.project(jnp.asarray(p)), ref.x, atol=1e-7)
+
+
+def test_kkt_error_matches_autodiff():
+    """``E_0`` with the open-loop Lagrangian gradient from the adjoint sweep against ``jax.grad``
+    (state-dependent constraints, duals large enough that the scaling ``c`` exceeds 1)."""
+    problem, horizon = nonlinear_problem(), 6
+    ip = InteriorPointDDP(problem, state_constraints, IPDDPOptions(stopping="kkt"))
+    x0, u = jnp.array([0.3, -0.2]), 0.4 * jnp.cos(jnp.arange(horizon, dtype=float))[:, None]
+    rng = np.random.default_rng(1)
+    s, z = jnp.asarray(rng.uniform(0.1, 1.0, (horizon, 3))), jnp.asarray(rng.uniform(100.0, 400.0, (horizon, 3)))
+    states = problem.rollout(x0, u)
+
+    def lagrangian(v):
+        xs = problem.rollout(x0, v)
+        return problem.total_cost(xs, v) + jnp.sum(z * jax.vmap(state_constraints)(xs[:-1], v))
+
+    c = float(jnp.mean(z)) / 100.0
+    primal = jax.vmap(state_constraints)(states[:-1], u) + s
+    expected = max(float(jnp.max(jnp.abs(jax.grad(lagrangian)(u)))) / c, float(jnp.max(jnp.abs(primal))), float(jnp.max(s * z)) / c)
+    *_, kkt_error = ip.backward_pass(states, u, s, z, 0.1, 1e-2)
+    assert c > 1
+    np.testing.assert_allclose(kkt_error, expected, rtol=1e-12)
+    assert InteriorPointDDP(problem, state_constraints).backward_pass(states, u, s, z, 0.1, 1e-2)[-1] is None
+
+
+def test_kkt_stopping_reaches_the_constrained_optimum():
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])  # 26 of the 30 optimal controls on the bound
+    u_ref, _ = reference_qp(problem, x0, 1, box(-1.0, 1.0))
+    ip = InteriorPointDDP(problem, box_constraints, IPDDPOptions(stopping="kkt"))
+    sol = ip.solve(x0, jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2)))
+    assert sol.status == Status.CONVERGED and sol.error < 1e-6
+    # s z <= tol puts a control within tol / z of its bound: at stage 26 z = 0.03, so 1e-5 away
+    np.testing.assert_allclose(sol.controls, u_ref, atol=1e-4)
+    for bad in ({"stopping": "natural"}, {"stopping": "kkt", "line_search": False}):
+        with pytest.raises(ValueError, match="stopping"):
+            IPDDPOptions(**bad)
+    with pytest.raises(ValueError, match="line_search"):
+        IPDDPOptions.paper(stopping="kkt")

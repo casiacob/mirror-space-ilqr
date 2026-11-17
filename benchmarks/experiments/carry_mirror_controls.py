@@ -1,11 +1,6 @@
-"""Carrying the mirror controls y instead of recomputing ybar = grad psi(ubar).
+"""Carry the mirror controls ``y`` instead of recomputing ``ybar = grad psi(ubar)``.
 
-The paper (Sec. III-C) and the code define the nominal mirror controls as
-``ybar = grad psi(ubar)``. In float64 this round trip truncates ``|ybar|`` of nearly
-saturated controls (to about 18 for the half-scale cart-pole map). This script runs the
-alternative that keeps the mirror controls ``y`` produced by the forward pass (also across
-MPC warm starts) and computes ``Psi^{-1}`` from ``u = grad psi*(y)``, on ``cartpole`` and
-``cartpole-compare`` (``docs/PAPER_NOTES.md``, note 8).
+Runs this variant on ``cartpole`` and ``cartpole-compare``.
 
 Usage: ``python benchmarks/experiments/carry_mirror_controls.py`` (~30 s).
 """
@@ -22,7 +17,7 @@ import numpy as np
 
 from cases import CASES, cartpole_ms_solver
 from msilqr import MirrorILQR, Solution
-from msilqr._common import termination_status
+from msilqr.common import termination_status
 from msilqr.problem import rollout
 
 
@@ -89,7 +84,7 @@ def main():
     solver = CarryILQR(base.problem, base.mirror_map, base.options)
     for case_name in ("cartpole", "cartpole-compare"):
         inp = CASES[case_name].inputs()
-        res = [carry_mpc(solver, x0, inp.u_init, inp.steps) for x0 in inp.x0]
+        res = [carry_mpc(solver, x0, u0, inp.steps) for x0, u0 in zip(inp.x0, inp.u_init, strict=True)]
         new = {f"ms_{f}": np.stack([np.asarray(r[i]) for r in res]) for i, f in enumerate(("states", "controls", "iterations", "status"))}
         new["x0"] = np.asarray(inp.x0)
         report(case_name, f"{case_name}: carry y", new)

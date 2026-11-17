@@ -6,7 +6,7 @@
 * Both solvers have an iteration cap and a convergence status; the original loops could
   run forever.
 * Solver internals restructured without changing their arithmetic (verified bitwise):
-  * `msilqr/_common.py` holds what both solvers share (status, stopping and
+  * `msilqr/common.py` holds what both solvers share (status, stopping and
     regularization options, the gain-ratio update, the stage expansion);
   * the mirror-space backward pass is split into `mirror_derivatives`, `q_expansion`,
     `feedback_gains` and `value_update`, mapped to Lemma 3, Prop. 4, Eq. (12) and Eq. (13);
@@ -38,6 +38,16 @@
   `IPDDPOptions.paper()` reproduces the paper's baseline bitwise, and
   `benchmarks/run.py --baseline fixed` runs the comparison with the fixed one. Tested
   against a projected-gradient QP solution and SciPy's SLSQP.
+* Optional stopping tests on the KKT conditions of the constrained problem, next to the
+  paper's (the defaults are unchanged):
+  * `SolverOptions(stopping="natural")`: mirror-space iLQR stops on the natural residual
+    `max |u − Π_U(u − ∇J)|` (`∇J` from an adjoint sweep in the backward pass; every
+    constraint set has a `project` method). It ends with `Status.STALLED` once a rejected
+    step predicts a decrease below `10ε|J|`, which float64 cannot register;
+  * `IPDDPOptions(stopping="kkt")`: IPDDP stops on the unperturbed KKT error
+    `max(|∇_u L| / c, |g + s|, |s z| / c)` with its own duals and IPOPT's scaling `c`.
+
+  `benchmarks/run.py --baseline fixed --stop kkt` runs the comparison with both.
 * MPC loops record the applied controls.
 * The regression gate also requires every MPC solve to converge (a result without status
   fails) and checks the polytope iteration counts. In CI the regression test fails,
@@ -56,4 +66,8 @@
   background material lives in `docs/` (this file, `PAPER_NOTES.md`, `REGRESSION.md`,
   `AUDIT.md`).
 
-Every change is bitwise-neutral on the four benchmarks.
+* The comparison cases draw each run's initial state and initial controls from its own
+  key (split from `PRNGKey(12)`); the original scripts shared one control sequence.
+
+Every other change is bitwise-neutral on the benchmarks; the regression test checks
+`cartpole` and `polytope`, which keep the original inputs.

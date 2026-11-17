@@ -3,9 +3,8 @@
 The solver runs iLQR in mirror coordinates, so every iterate satisfies the constraints.
 """
 
-from msilqr._common import RegularizationOptions, Status
+from msilqr.common import RegularizationOptions, Status
 from msilqr.ipddp import InteriorPointDDP, IPDDPOptions, IPDDPSolution
-from msilqr.mirror_ilqr import MirrorILQR, Solution, SolverOptions
 from msilqr.mirror_maps import (
     BoxEntropy,
     BoxLogBarrier,
@@ -15,6 +14,7 @@ from msilqr.mirror_maps import (
     Positivity,
 )
 from msilqr.mpc import MPCResult, ipddp_mpc, mirror_mpc
+from msilqr.msilqr import MirrorILQR, Solution, SolverOptions
 from msilqr.problem import OptimalControlProblem, euler, rollout
 from msilqr.systems import CartPole, DoubleIntegrator
 

@@ -1,9 +1,6 @@
-"""A damped Newton method for the polytope inverse map instead of the original solver.
+"""A damped Newton method for the polytope inverse map ``grad psi*``.
 
-``grad psi*(y) = argmin_u psi(u) - y^T u`` is a smooth, strictly convex problem, so a
-damped Newton method with a feasibility-preserving backtracking line search is the
-textbook choice. This script swaps it in for the original optimistix root finding on
-``polytope-compare`` (``docs/REGRESSION.md``, "Performance follow-ups").
+Runs it in place of the original root finding on ``polytope-compare``.
 
 Usage: ``python benchmarks/experiments/polytope_damped_newton.py`` (~20 s).
 """

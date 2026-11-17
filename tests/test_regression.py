@@ -1,4 +1,7 @@
-"""End-to-end regression against the original implementation (slow, ~1-2 min).
+"""End-to-end regression against the original implementation (slow, ~1 min).
+
+Only ``cartpole`` and ``polytope`` keep the original scripts' inputs; the comparison cases
+draw their own initial controls per run, so they are not compared.
 
 XLA compiles for the host CPU, so outputs are only comparable bit for bit on the same
 machine. By default this test therefore regenerates the golden outputs from the original
@@ -46,5 +49,6 @@ def test_benchmarks_match_original_bitwise(tmp_path):
         capture = os.path.join(ROOT, "benchmarks", "legacy", "capture.py")
         subprocess.run([sys.executable, capture, "--ref", LEGACY_REF, "--out", golden], check=True, cwd=ROOT)
     results = str(tmp_path / "results")
-    assert run.main(["--out", results]) == 0
-    assert regression.main(["--new", results, "--golden", golden, "--bitwise"]) == 0
+    cases = ["--cases", "cartpole", "polytope"]
+    assert run.main(["--out", results, *cases]) == 0
+    assert regression.main(["--new", results, "--golden", golden, "--bitwise", *cases]) == 0

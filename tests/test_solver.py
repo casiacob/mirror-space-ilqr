@@ -77,7 +77,7 @@ CASES = [
     ("box-log-barrier", lq_1d, BoxLogBarrier(-1.0, 1.0), [3.0, 0.0], 0.0, box(-1.0, 1.0), 1e-6, True),
     ("positivity", lq_1d, Positivity(), [3.0, 0.0], 0.5, lambda u: jnp.maximum(u, 0.0), 1e-6, True),
     ("euclidean-ball-axis", lq_2d, EuclideanBall(), [2.0, 0.0, 0.0, 0.0], 0.0, unit_ball_projection, 1e-6, True),
-    # Known limitation (docs/PAPER_NOTES.md, note 10): when the optimal controls slide along
+    # Known limitation: when the optimal controls slide along
     # the curved boundary of the ball, the lambda*I damping in mirror coordinates makes
     # progress roughly like 1/k (error 3.7e-4, 9.0e-5, 1.3e-5 after 1k, 5k, 20k iterations).
     # Feasible and close, but not converged within the default cap.
@@ -215,3 +215,41 @@ def test_proposition_5_on_a_full_horizon():
         Vx = Qx + Qux.T @ k_u + K_u.T @ Qu + K_u.T @ Quu_hat @ k_u
         Vxx = Qxx + K_u.T @ Quu_hat @ K_u + K_u.T @ Qux + Qux.T @ K_u
         Vxx = 0.5 * (Vxx + Vxx.T)
+
+
+# ------------------------------------------------------------ natural stopping test ---
+
+NATURAL = SolverOptions(stopping="natural")
+
+
+def test_natural_residual_matches_autodiff():
+    """The backward pass gets ``dJ/du`` from an adjoint sweep; compare with ``jax.grad``."""
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])
+    controls = 0.9 * jnp.sin(jnp.arange(T, dtype=float))[:, None]
+    gradient = jax.grad(lambda u: problem.total_cost(problem.rollout(x0, u), u))(controls)
+    expected = jnp.max(jnp.abs(controls - jnp.clip(controls - gradient, -1.0, 1.0)))
+    *_, error = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), NATURAL).backward_pass(problem.rollout(x0, controls), controls, 1e-2)
+    assert expected > 1e-2
+    np.testing.assert_allclose(error, expected, rtol=1e-12)
+
+
+def test_natural_stopping_reaches_the_constrained_optimum():
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])  # 26 of the 30 optimal controls on the bound
+    u_ref, _ = reference_qp(problem, x0, 1, box(-1.0, 1.0))
+    sol = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), NATURAL).solve(x0, jnp.zeros((T, 1)))
+    assert sol.status == Status.CONVERGED and sol.error < 1e-6
+    np.testing.assert_allclose(sol.controls, u_ref, atol=1e-5)
+
+
+def test_natural_stopping_reports_frozen_controls():
+    """Controls exactly on the bound have ``Psi^{-1} = 0``. The paper's test reports
+    convergence at once; the natural residual sees that the gradient points into the box,
+    and since no step can move these controls the solve ends ``STALLED``."""
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])
+    plan = jnp.ones((T, 1))  # on the upper bound; the optimum pushes them down
+    paper = MirrorILQR(problem, BoxEntropy(-1.0, 1.0)).solve(x0, plan, validate=False)
+    natural = MirrorILQR(problem, BoxEntropy(-1.0, 1.0), NATURAL).solve(x0, plan, validate=False)
+    assert paper.status == Status.CONVERGED and paper.error == 0.0
+    assert natural.status == Status.STALLED and natural.error > 1e-2 and int(natural.iterations) == 1
+    with pytest.raises(ValueError, match="stopping"):
+        SolverOptions(stopping="kkt")

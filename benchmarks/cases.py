@@ -1,22 +1,8 @@
-"""The four experiments shipped with the original code, rebuilt on the new API.
+"""Benchmark cases: the experiments of the paper.
 
-Each case replays the exact inputs of one original script (``examples/*.py`` at commit
-effb14c), including its JAX random-number calls, so the results can be compared
-bitwise with ``benchmarks/legacy/golden``:
-
-==================  =========================================  =========  ====  =====
-case                original script                            x0         T     steps
-==================  =========================================  =========  ====  =====
-cartpole            cartpole.py                                1 (fixed)  100   400
-cartpole-compare    cartpole-mm-v-ip.py (MS vs IP)              10 random  100   400
-polytope            wiener-polytope.py                          1 (fixed)  15    300
-polytope-compare    wiener-polytope-mm-v-ip.py (MS vs IP)       10 random  15    300
-==================  =========================================  =========  ====  =====
-
-Settings that differ from the paper's text are kept on purpose (they are what the
-golden results were produced with) and are listed in ``docs/PAPER_NOTES.md``: the cart-pole box map
-uses half of Table I's entropy DGF (``scale=0.5``), and the double-integrator
-comparison samples its initial states around 0 instead of the paper's ``x0``.
+* ``polytope``: double integrator in a polytope (Fig. 2);
+* ``cartpole``: cart-pole swing-up (Fig. 3);
+* ``polytope-compare``, ``cartpole-compare``: comparison with interior-point DDP (Fig. 4).
 """
 
 from __future__ import annotations
@@ -45,7 +31,7 @@ CARTPOLE_BOX_SCALE = 0.5  # the original scripts' map; the paper's Table I map i
 @dataclass(frozen=True)
 class Inputs:
     x0: jax.Array  # (N, nx)
-    u_init: jax.Array  # (T, nu), shared by all initial states
+    u_init: jax.Array  # (N, T, nu), one per initial state
     steps: int
     ip_slacks: jax.Array | None = None  # (T, nc)
     ip_duals: jax.Array | None = None  # (T, nc)
@@ -58,6 +44,18 @@ class Case:
     inputs: Callable[[], Inputs]
     ms_solver: Callable[..., MirrorILQR]  # cart-pole cases accept box_scale=
     ip_solver: Callable[..., InteriorPointDDP] | None = None  # options default to IPDDPOptions.paper()
+
+
+def sample_runs(n, x0_mean, x0_std, horizon, nu):
+    """``n`` runs from ``PRNGKey(12)``: each run's key draws its initial state
+    ``x0_mean + x0_std N(0, I)`` and its initial controls ``0.1 N(0, I)``."""
+
+    def draw(key):
+        x0_key, u_key = jax.random.split(key)
+        x0 = x0_mean + x0_std * jax.random.normal(x0_key, shape=x0_mean.shape)
+        return x0, 0.1 * jax.random.normal(u_key, shape=(horizon, nu))
+
+    return jax.vmap(draw)(jax.random.split(jax.random.PRNGKey(12), n))
 
 
 # ------------------------------------------------------------------- cart-pole ---
@@ -82,17 +80,12 @@ def cartpole_inputs() -> Inputs:
     key = jax.random.PRNGKey(12)
     x0 = jnp.array([-0.01, 0.01, -0.01, 0.01])
     u_init = jax.random.normal(key, shape=(100, 1)) * 0.1
-    return Inputs(x0[None], u_init, steps=400)
+    return Inputs(x0[None], u_init[None], steps=400)
 
 
 def cartpole_compare_inputs() -> Inputs:
-    horizon, n = 100, 10
-    key = jax.random.PRNGKey(12)
-    key, x0_key, u_key = jax.random.split(key, 3)
-    x0_mean = jnp.array([-0.01, 0.01, -0.01, 0.01])
-    x0_std = jnp.array([0.0001, 0.0001, 0.05, 0.05])
-    x0 = x0_mean + x0_std * jax.random.normal(x0_key, shape=(n, 4))
-    u_init = jax.random.normal(u_key, shape=(horizon, 1)) * 0.1
+    horizon = 100
+    x0, u_init = sample_runs(10, jnp.array([-0.01, 0.01, -0.01, 0.01]), jnp.array([0.0001, 0.0001, 0.05, 0.05]), horizon, 1)
     return Inputs(x0, u_init, steps=400, ip_slacks=0.1 * jnp.ones((horizon, 2)), ip_duals=0.01 * jnp.ones((horizon, 2)))
 
 
@@ -119,17 +112,12 @@ def polytope_inputs() -> Inputs:
     key = jax.random.PRNGKey(12)
     x0 = jnp.array([0.2, -0.1, -0.1, 0.1])
     u_init = jax.random.normal(key, shape=(15, 2)) * 0.1
-    return Inputs(x0[None], u_init, steps=300)
+    return Inputs(x0[None], u_init[None], steps=300)
 
 
 def polytope_compare_inputs() -> Inputs:
-    horizon, n, nc = 15, 10, len(POLYTOPE_H)
-    key = jax.random.PRNGKey(12)
-    key, x0_key, u_key = jax.random.split(key, 3)
-    x0_mean = jnp.array([0.0, 0.0, 0.0, 0.0])
-    x0_std = jnp.array([0.1, 0.1, 0.005, 0.005])
-    x0 = x0_mean + x0_std * jax.random.normal(x0_key, shape=(n, 4))
-    u_init = jax.random.normal(u_key, shape=(horizon, 2)) * 0.1
+    horizon, nc = 15, len(POLYTOPE_H)
+    x0, u_init = sample_runs(10, jnp.zeros(4), jnp.array([0.1, 0.1, 0.005, 0.005]), horizon, 2)
     return Inputs(x0, u_init, steps=300, ip_slacks=0.1 * jnp.ones((horizon, nc)), ip_duals=0.01 * jnp.ones((horizon, nc)))
 
 

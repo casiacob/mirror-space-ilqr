@@ -1,14 +1,7 @@
 """Receding-horizon (MPC) closed loops for both solvers.
 
-Each MPC step solves the finite-horizon problem from the current state, applies the
-first control, and warm-starts the next solve with the plan shifted by one step (the
-last control repeated). The model is exact, so the next state equals the first
-predicted state of the plan.
-
-Both loops are jit-compiled once per solver and number of steps (the compiled function
-is cached on the solver object and released with it), and record the APPLIED control
-of every step (the original interior-point scripts recorded the next planned control
-instead).
+Each step solves the finite-horizon problem from the current state, applies the first
+control, and warm-starts the next solve with the plan shifted by one step.
 """
 
 from __future__ import annotations
@@ -18,8 +11,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from msilqr._common import as_float64 as _as_float64
-from msilqr._common import check_trajectory_shapes
+from msilqr.common import as_float64 as _as_float64
+from msilqr.common import check_trajectory_shapes
 
 __all__ = ["MPCResult", "mirror_mpc", "ipddp_mpc"]
 
@@ -58,7 +51,7 @@ def _mirror_mpc_fn(solver, num_steps: int):
 
 
 def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int) -> MPCResult:
-    """Closed loop of :class:`~msilqr.mirror_ilqr.MirrorILQR`.
+    """Closed loop of :class:`~msilqr.msilqr.MirrorILQR`.
 
     Args:
         solver: the mirror-space solver (its problem defines the model).
@@ -75,8 +68,7 @@ def mirror_mpc(solver, x0: jax.Array, u_init: jax.Array, num_steps: int) -> MPCR
 
 def _ipddp_mpc_fn(solver, num_steps: int, warm_start: bool):
     dynamics = solver.problem.dynamics
-    opt = solver.options
-    mu_floor = (opt.barrier_tol if opt.barrier_tol is not None else opt.tol) / 10.0
+    mu_floor = solver._mu_floor()
 
     def run(x0, u_init, slacks, duals):
         if warm_start and num_steps > 0:
@@ -119,12 +111,11 @@ def ipddp_mpc(
 
     With ``warm_start=True`` every MPC step after the first starts from the shifted
     controls, slacks and duals of the previous plan, with the barrier parameter set to their
-    average complementarity ``mean(s z)`` (at least ``barrier_tol / 10``), so the warm start
+    average complementarity ``mean(s z)`` (at least the solver's smallest ``mu``), so the warm start
     lies near the central path. The first step starts from the given slacks and duals with
     the initial barrier rule. With ``warm_start=False`` (the protocol of the paper's Fig. 4)
     only the controls are warm-started: every step restarts from the given ``slacks`` and
-    ``duals`` with the initial barrier rule. Warm-starting slacks and duals while resetting
-    the barrier parameter is worse than either (``docs/PAPER_NOTES.md``, note 4).
+    ``duals`` with the initial barrier rule.
     """
     check_trajectory_shapes(x0, u_init, slacks, duals)
     x0, u_init, slacks, duals = (_as_float64(a) for a in (x0, u_init, slacks, duals))

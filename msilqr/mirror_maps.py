@@ -1,35 +1,14 @@
 """Mirror maps for convex control constraints (Sec. III-A and Table I of the paper).
 
-A mirror map is the gradient of a Legendre-type distance-generating function (DGF)
-``psi`` whose domain interior is the admissible set ``int(U)`` (Definition 1). It maps
-constrained controls ``u`` to unconstrained mirror controls ``y = grad psi(u)``; its
-inverse is ``grad psi*(y)`` (Proposition 2). The solver only needs:
-
-* ``grad(u)``         -- the mirror map ``y = grad psi(u)``,
-* ``inverse(y, u_ref)`` -- the inverse map ``u = grad psi*(y)`` (``u_ref`` is a warm start
-  for maps whose inverse has no closed form),
-* ``inv_hessian(u)``  -- ``Psi(u)^{-1} = (grad^2 psi(u))^{-1}``, the Jacobian ``du/dy``.
-
-``hessian(u)`` (``Psi(u)``) is provided for completeness and for tests, and
-``contains(u)`` tests ``u in int(U)``.
-
-All maps act on a single control vector of shape ``(m,)`` and are pure JAX functions.
-
-Floating point: in exact arithmetic ``grad psi*`` maps every ``y`` into ``int(U)``. In
-float64 the closed-form inverses saturate (``tanh`` rounds to exactly 1, ``exp``
-underflows), so the returned control can land exactly on the boundary of ``U``. The
-closed-form maps (box, positivity, Euclidean ball) guarantee that ``inverse`` returns a
-point of the closed set ``U`` for every finite ``y`` and that ``grad`` and
-``inv_hessian`` stay finite there, so no ``inf``/``NaN`` enters an iteration. At a
-boundary point ``Psi^{-1}`` is 0, so the control is frozen until a later warm start moves
-it (``docs/PAPER_NOTES.md``, note 8). The polytope map has no closed-form inverse: its
-Newton solve can fail and return ``NaN`` (the solver then rejects the step), and its
-``grad`` is infinite on the boundary.
+A mirror map ``y = grad psi(u)`` is the gradient of a Legendre function ``psi`` whose
+domain interior is ``int(U)``; its inverse is ``u = grad psi*(y)``. Maps act on a single
+control of shape ``(m,)``.
 """
 
 from __future__ import annotations
 
 import abc
+import itertools
 from dataclasses import dataclass
 
 import jax
@@ -69,6 +48,11 @@ class MirrorMap(abc.ABC):
     @abc.abstractmethod
     def contains(self, u: jax.Array) -> jax.Array:
         """Whether ``u`` lies in the interior ``int(U)`` (a boolean scalar)."""
+
+    def project(self, u: jax.Array) -> jax.Array:
+        """Euclidean projection of ``u`` onto the closed set ``U`` (used by the
+        ``stopping="natural"`` test of :class:`~msilqr.MirrorILQR`)."""
+        raise NotImplementedError(f"{type(self).__name__} has no projection")
 
 
 def _as_bound(value):
@@ -113,7 +97,7 @@ class BoxEntropy(MirrorMap):
     Legendre function with the same constraint set but a different geometry: with the
     paper's ``lambda * I`` damping in mirror coordinates (Sec. III-C) the scale changes
     the iterates. The original cart-pole experiments used ``scale = 0.5``
-    (``y = 0.5 log(...)``, ``u = rho tanh(y)``); see ``docs/PAPER_NOTES.md``, note 1.
+    (``y = 0.5 log(...)``, ``u = rho tanh(y)``).
 
     Floating point: once ``|y| / (2 scale)`` exceeds about 19.06, ``tanh`` rounds to
     exactly 1 in float64. Then ``mu + rho * tanh(.)`` evaluates to ``mu +- rho``, which for
@@ -164,6 +148,9 @@ class BoxEntropy(MirrorMap):
 
     def contains(self, u):
         return jnp.all((u > self.low) & (u < self.high))
+
+    def project(self, u):
+        return jnp.clip(u, self.low, self.high)
 
 
 # --------------------------------------------------------------------------------------
@@ -217,6 +204,9 @@ class BoxLogBarrier(MirrorMap):
     def contains(self, u):
         return jnp.all((u > self.low) & (u < self.high))
 
+    def project(self, u):
+        return jnp.clip(u, self.low, self.high)
+
 
 @dataclass(frozen=True, eq=False)
 class Positivity(MirrorMap):
@@ -245,6 +235,9 @@ class Positivity(MirrorMap):
 
     def contains(self, u):
         return jnp.all((u > 0) & jnp.isfinite(u))
+
+    def project(self, u):
+        return jnp.maximum(u, 0.0)
 
 
 @dataclass(frozen=True, eq=False)
@@ -305,6 +298,9 @@ class EuclideanBall(MirrorMap):
 
     def contains(self, u):
         return u @ u < 1.0
+
+    def project(self, u):
+        return u / jnp.maximum(1.0, jnp.linalg.norm(u))
 
 
 # --------------------------------------------------------------------------------------
@@ -386,3 +382,22 @@ class PolytopeLogBarrier(MirrorMap):
 
     def contains(self, u):
         return jnp.all(self.slack(u) > 0)
+
+    def project(self, u):
+        """Closest feasible point among the projections of ``u`` onto the affine hulls of
+        the faces (every set of at most ``m`` facets). Exact, but the number of sets grows
+        combinatorially, so it is meant for small control dimensions."""
+        G, h = self.G, self.h
+        candidates = [u[None]]
+        for k in range(1, min(G.shape) + 1):
+            sets = jnp.array(list(itertools.combinations(range(G.shape[0]), k)))
+
+            def onto(rows):
+                A, b = G[rows], h[rows]
+                return u - A.T @ (jnp.linalg.pinv(A @ A.T) @ (A @ u - b))
+
+            candidates.append(jax.vmap(onto)(sets))
+        candidates = jnp.concatenate(candidates)
+        feasible = jnp.all(candidates @ G.T <= h + 1e-10 * (1.0 + jnp.abs(h)), axis=1)
+        distance = jnp.where(feasible, jnp.sum((candidates - u) ** 2, axis=1), jnp.inf)
+        return candidates[jnp.argmin(distance)]

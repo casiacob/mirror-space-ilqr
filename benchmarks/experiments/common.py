@@ -26,7 +26,7 @@ from msilqr import mirror_mpc  # noqa: E402
 def run_ms(case_name: str, solver, mpc=mirror_mpc) -> dict:
     """Mirror-space closed loops of ``case_name`` with ``solver`` (one compile, Python loop)."""
     inp = CASES[case_name].inputs()
-    res = [mpc(solver, x0, inp.u_init, inp.steps) for x0 in inp.x0]
+    res = [mpc(solver, x0, u0, inp.steps) for x0, u0 in zip(inp.x0, inp.u_init, strict=True)]
     out = {f"ms_{f}": np.stack([np.asarray(getattr(r, f)) for r in res]) for f in ("states", "controls", "iterations", "status")}
     out["x0"] = np.asarray(inp.x0)
     return out
