@@ -4,7 +4,7 @@
 ``subject to x_{t+1} = f(x_t, u_t),  x_0 = x_s,  u_t in U``
 
 The control constraint ``u_t in U`` is not part of :class:`OptimalControlProblem`: the
-mirror-space solver encodes it in a :class:`~msilqr.mirror_maps.MirrorMap`, the
+mirror-space solver encodes it in a :class:`~msilqr.maps.MirrorMap`, the
 interior-point baseline in an explicit inequality ``g(x, u) <= 0``.
 """
 

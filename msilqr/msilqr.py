@@ -27,7 +27,7 @@ from msilqr.common import (
     require_x64,
     termination_status,
 )
-from msilqr.mirror_maps import MirrorMap
+from msilqr.maps import MirrorMap
 from msilqr.problem import OptimalControlProblem, rollout
 
 __all__ = ["MirrorILQR", "SolverOptions", "Solution", "Status"]

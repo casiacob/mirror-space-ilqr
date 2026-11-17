@@ -5,7 +5,7 @@ The solver runs iLQR in mirror coordinates, so every iterate satisfies the const
 
 from msilqr.common import RegularizationOptions, Status
 from msilqr.ipddp import InteriorPointDDP, IPDDPOptions, IPDDPSolution
-from msilqr.mirror_maps import (
+from msilqr.maps import (
     BoxEntropy,
     BoxLogBarrier,
     EuclideanBall,
