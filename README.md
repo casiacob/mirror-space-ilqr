@@ -35,40 +35,30 @@ sol = solver.solve(x0, u0)  # one finite-horizon solve
 res = mirror_mpc(solver, x0, u0, num_steps=400)  # closed loop
 ```
 
+The closed loop swings the pole up within the force limits. To plot it (needs
+`matplotlib`):
+
+```python
+import matplotlib.pyplot as plt
+
+t = CartPole().dt * jnp.arange(res.states.shape[0])
+fig, (left, right) = plt.subplots(1, 2, figsize=(8, 3))
+left.plot(t, res.states[:, 0], label="cart position")
+left.plot(t, res.states[:, 1], label="pole angle")
+left.axhline(jnp.pi, color="gray", linestyle=":")  # upright
+right.plot(t[:-1], res.controls[:, 0], label="force")
+for bound in (-50.0, 50.0):
+    right.axhline(bound, color="gray", linestyle=":")
+for ax in (left, right):
+    ax.set_xlabel("time [s]")
+    ax.legend()
+fig.tight_layout()
+plt.show()
+```
+
 For your own system, define `OptimalControlProblem(dynamics, stage_cost, final_cost)` and
 pick a constraint set: `BoxEntropy`, `BoxLogBarrier`, `Positivity`, `EuclideanBall` or
 `PolytopeLogBarrier`. The initial controls must lie strictly inside it.
-
-## Reproducing the figures
-
-The benchmark scripts need `matplotlib`:
-
-```bash
-pip install -e ".[benchmarks]"
-```
-
-Run the experiments, then draw the figures from their results:
-
-```bash
-python benchmarks/run.py --out results
-python benchmarks/figures.py --results results --out figures
-```
-
-`run.py` runs the model-predictive control loops (a few minutes on a laptop CPU) and
-writes one `.npz` file per case to `results/`. `figures.py` writes each figure to
-`figures/` as PDF and PNG:
-
-| File | Content |
-|---|---|
-| `fig2_double_integrator` | Double integrator with polytopic control constraints: positions and controls |
-| `fig3_cartpole` | Cart-pole swing-up with a bounded force: cart position, pole angle and control |
-| `fig4_iterations` | Iterations per MPC step, mirror-space iLQR against interior-point DDP, averaged over 25 random initial control sequences |
-
-`--cases` runs a subset, for example `--cases polytope cartpole`.
-
-## License
-
-[MIT](LICENSE) © 2026 Casian Iacob and Hany Abdulsamad.
 
 ## Citation
 
