@@ -1,0 +1,260 @@
+"""Interior-point DDP baseline."""
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pytest
+import scipy.optimize
+from test_solver import T, box, lq_1d, reference_qp
+
+from msilqr import (
+    BoxEntropy,
+    DoubleIntegrator,
+    InteriorPointDDP,
+    IPDDPOptions,
+    MirrorILQR,
+    OptimalControlProblem,
+    PolytopeLogBarrier,
+    Status,
+    ipddp_mpc,
+)
+from msilqr.systems import POLYTOPE_G, POLYTOPE_H
+
+G, H = jnp.array(POLYTOPE_G), jnp.array(POLYTOPE_H)
+
+
+def nonlinear_problem():
+    A = jnp.array([[1.0, 0.1], [0.0, 1.0]])
+    B = jnp.array([[0.0], [0.1]])
+    return OptimalControlProblem(
+        lambda x, u: A @ x + B @ u + 0.05 * jnp.array([jnp.sin(x[1]), x[0] * u[0]]),
+        lambda x, u: 0.5 * x @ jnp.diag(jnp.array([2.0, 1.0])) @ x + 0.5 * 0.3 * u @ u + 0.1 * x[0] * u[0],
+        lambda x: 0.5 * x @ jnp.diag(jnp.array([5.0, 3.0])) @ x,
+    )
+
+
+def state_constraints(x, u):
+    return jnp.array([u[0] - 1.0 + 0.3 * x[0] + 0.2 * x[1] ** 2, -u[0] - 1.0 + 0.5 * x[1], 0.4 * x[0] - x[1] + 0.1 * u[0] ** 2 - 2.0])
+
+
+def test_backward_pass_gains_solve_the_perturbed_kkt_system():
+    """Gains of one stage against a direct solve of the linearized perturbed KKT system
+    (state-dependent constraints, so the Sigma = S^{-1} Z feedback term matters)."""
+    problem = nonlinear_problem()
+    ip = InteriorPointDDP(problem, state_constraints)
+    x0, u = jnp.array([0.3, -0.2]), jnp.array([[0.1]])
+    states = problem.rollout(x0, u)
+    s, z = jnp.array([[0.4, 0.7, 1.3]]), jnp.array([[0.2, 0.05, 0.6]])
+    mu, reg = 0.1, 1e-2
+    k_u, k_z, k_s, K_u, K_z, K_s, *_ = ip.backward_pass(states, u, s, z, mu, reg)
+
+    x, uu, ss, zz = states[0], u[0], s[0], z[0]
+    lag = lambda x_, u_: problem.stage_cost(x_, u_) + zz @ state_constraints(x_, u_)  # noqa: E731
+    Vx, Vxx = jax.grad(problem.final_cost)(states[1]), jax.hessian(problem.final_cost)(states[1])
+    fx, fu = jax.jacrev(problem.dynamics, 0)(x, uu), jax.jacrev(problem.dynamics, 1)(x, uu)
+    Qu = jax.grad(lag, 1)(x, uu) + fu.T @ Vx
+    Quu = jax.hessian(lag, 1)(x, uu) + fu.T @ Vxx @ fu + reg * jnp.eye(1)
+    Qux = jax.jacrev(jax.grad(lag, 1), 0)(x, uu) + fu.T @ Vxx @ fx
+    cx, cu = jax.jacrev(state_constraints, 0)(x, uu), jax.jacrev(state_constraints, 1)(x, uu)
+    rp, rd = state_constraints(x, uu) + ss, zz * ss - mu
+    m, nc, n = 1, 3, 2
+    kkt = jnp.block(
+        [
+            [Quu, jnp.zeros((m, nc)), cu.T],
+            [cu, jnp.eye(nc), jnp.zeros((nc, nc))],
+            [jnp.zeros((nc, m)), jnp.diag(zz), jnp.diag(ss)],
+        ]
+    )
+    ff = jnp.linalg.solve(kkt, -jnp.concatenate([Qu, rp, rd]))
+    fb = jnp.linalg.solve(kkt, -jnp.concatenate([Qux, cx, jnp.zeros((nc, n))]))
+    np.testing.assert_allclose(k_u[0], ff[:m], rtol=1e-10, atol=1e-14)
+    np.testing.assert_allclose(K_u[0], fb[:m], rtol=1e-10, atol=1e-14)
+    np.testing.assert_allclose(k_s[0], ff[m : m + nc], rtol=1e-10, atol=1e-14)
+    np.testing.assert_allclose(K_s[0], fb[m : m + nc], rtol=1e-10, atol=1e-14)
+    np.testing.assert_allclose(k_z[0], ff[m + nc :], rtol=1e-10, atol=1e-14)
+    np.testing.assert_allclose(K_z[0], fb[m + nc :], rtol=1e-10, atol=1e-14)
+
+
+def polytope_solver(**options):
+    return InteriorPointDDP(DoubleIntegrator().problem(), lambda x, u: G @ u - H, IPDDPOptions(**options))
+
+
+def polytope_inputs():
+    return jnp.array([0.2, -0.1, -0.1, 0.1]), 0.1 * jnp.ones((15, 2)), 0.1 * jnp.ones((15, 8)), 0.01 * jnp.ones((15, 8))
+
+
+def test_status_and_cap():
+    x0, u0, s0, z0 = polytope_inputs()
+    sol = polytope_solver().solve(x0, u0, s0, z0)
+    assert sol.status == Status.CONVERGED and sol.error < 1e-4 and IPDDPOptions().tol == 1e-4
+    capped = polytope_solver(max_iter=3).solve(x0, u0, s0, z0)
+    assert int(capped.iterations) == 3 and capped.status == Status.MAX_ITER
+    none = polytope_solver(max_iter=0).solve(x0, u0, s0, z0)
+    assert int(none.iterations) == 0 and none.status == Status.MAX_ITER
+    assert jnp.all(G @ sol.controls.T - H[:, None] <= 1e-4)
+
+
+def test_barrier_init_and_nonpositive_costs():
+    x0, u0, s0, z0 = polytope_inputs()
+    system = DoubleIntegrator()
+    shifted = OptimalControlProblem(system.problem().dynamics, lambda x, u: system.stage_cost(x, u) - 100.0, system.final_cost)
+    reference = polytope_solver(tol=1e-8).solve(x0, u0, s0, z0)
+    for options in (dict(barrier_init=1.0), dict()):  # explicit, and the fallback of the initial-barrier rule
+        ip = InteriorPointDDP(shifted, lambda x, u: G @ u - H, IPDDPOptions(tol=1e-8, **options))
+        sol = ip.solve(x0, u0, s0, z0)
+        assert sol.status == Status.CONVERGED
+        # same solution up to the interior-point accuracy at this tolerance
+        np.testing.assert_allclose(sol.controls, reference.controls, atol=1e-4)
+
+
+def test_rejects_nonpositive_slacks_or_duals():
+    x0, u0, s0, z0 = polytope_inputs()
+    with pytest.raises(ValueError, match="strictly positive"):
+        polytope_solver().solve(x0, u0, s0.at[0, 0].set(0.0), z0)
+    with pytest.raises(ValueError, match="strictly positive"):
+        polytope_solver().solve(x0, u0, s0, -z0)
+    with pytest.raises(ValueError, match="strictly positive"):
+        ipddp_mpc(polytope_solver(), x0, u0, s0, z0.at[3, 1].set(0.0), 2)
+    with pytest.raises(ValueError, match="shape"):
+        polytope_solver().solve(x0, u0, s0[:-1], z0)
+
+
+@pytest.mark.parametrize("bad", [{"barrier_init": 0.0}, {"barrier_init_fallback": 0.0}, {"reg_init": -1.0}])
+def test_options_are_validated(bad):
+    with pytest.raises(ValueError):
+        IPDDPOptions(**bad)
+
+
+# ------------------------------------------------------------- against references ---
+
+
+def box_constraints(x, u):
+    return jnp.concatenate((u - 1.0, -u - 1.0))
+
+
+# At the barrier optimum a constraint with multiplier z keeps a slack of about mu / z, so
+# at mu ~ 1e-7 weakly active constraints (small z) leave controls ~1e-3 from the exact
+# optimum while the cost is within ~1e-7 (relative). Hence the control tolerance below.
+CONTROL_ATOL = 2e-3
+
+
+TIGHT = IPDDPOptions(tol=1e-6)
+
+
+def check_kkt_point(sol, constraints, tol=1e-6):
+    assert sol.status == Status.CONVERGED and sol.error < tol
+    c = jax.vmap(constraints)(sol.states[:-1], sol.controls)
+    assert float(jnp.max(jnp.abs(c + sol.slacks))) <= tol and float(jnp.max(c)) <= tol
+
+
+def test_box_constrained_lq_matches_projected_gradient():
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])  # 26 of the 30 optimal controls on the bound
+    u_ref, J_ref = reference_qp(problem, x0, 1, box(-1.0, 1.0))
+    sol = InteriorPointDDP(problem, box_constraints, TIGHT).solve(x0, jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2)))
+    check_kkt_point(sol, box_constraints)
+    np.testing.assert_allclose(problem.total_cost(sol.states, sol.controls), J_ref, rtol=1e-6)
+    np.testing.assert_allclose(sol.controls, u_ref, atol=CONTROL_ATOL)
+
+
+def test_polytope_constrained_double_integrator_matches_scipy():
+    problem, horizon = DoubleIntegrator().problem(), 15
+    x0 = jnp.array([0.2, -0.1, -0.1, 0.1])
+
+    def J(U):
+        u = jnp.reshape(U, (horizon, 2))
+        return problem.total_cost(problem.rollout(x0, u), u)
+
+    J_jit, dJ = jax.jit(J), jax.jit(jax.grad(J))
+    Gn, Hn = np.asarray(G), np.asarray(H)
+    cons = {"type": "ineq", "fun": lambda U: -(np.reshape(U, (horizon, 2)) @ Gn.T - Hn).ravel()}
+    ref = scipy.optimize.minimize(
+        lambda U: float(J_jit(U)), np.zeros(2 * horizon), jac=lambda U: np.asarray(dJ(jnp.asarray(U))), constraints=[cons],
+        method="SLSQP", options={"ftol": 1e-14, "maxiter": 1000},
+    )  # fmt: skip
+    assert ref.success
+    u_ref = ref.x.reshape(horizon, 2)
+    assert float(np.max(u_ref @ Gn.T - Hn)) > -1e-6, "the constraints should be active"
+
+    constraints = lambda x, u: G @ u - H  # noqa: E731
+    sol = InteriorPointDDP(problem, constraints, TIGHT).solve(x0, jnp.zeros((horizon, 2)), jnp.ones((horizon, 8)), jnp.ones((horizon, 8)))
+    check_kkt_point(sol, constraints)
+    np.testing.assert_allclose(problem.total_cost(sol.states, sol.controls), ref.fun, rtol=1e-6)
+    np.testing.assert_allclose(sol.controls, u_ref, atol=CONTROL_ATOL)
+
+
+@pytest.mark.parametrize("warm_start", [True, False])
+def test_mpc_warm_and_cold(warm_start):
+    problem = DoubleIntegrator().problem()
+    x0, u0, s0, z0 = polytope_inputs()
+    res = ipddp_mpc(polytope_solver(), x0, u0, s0, z0, 25, warm_start=warm_start)
+    assert jnp.all(res.status == 0)
+    np.testing.assert_allclose(res.states[1:], jax.vmap(problem.dynamics)(res.states[:-1], res.controls), rtol=0, atol=1e-14)
+    assert float(jnp.max(res.controls @ G.T - H)) <= 1e-6
+
+
+def test_solve_inside_jit_with_constant_inputs():
+    """Concrete inputs closed over inside jit are checked."""
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])
+    u0, s0, z0 = jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2))
+    s_bad = -s0
+    ip = InteriorPointDDP(problem, box_constraints)
+    ms = MirrorILQR(problem, BoxEntropy(-1.0, 1.0))
+    np.testing.assert_allclose(jax.jit(lambda x: ip.solve(x, u0, s0, z0).controls)(x0), ip.solve(x0, u0, s0, z0).controls)
+    np.testing.assert_allclose(jax.jit(lambda x: ms.solve(x, u0).controls)(x0), ms.solve(x0, u0).controls)
+    with pytest.raises(ValueError, match="strictly positive"):
+        jax.jit(lambda x: ip.solve(x, u0, s_bad, z0).controls)(x0)
+
+
+def test_barrier_override_and_options():
+    x0, u0, s0, z0 = polytope_inputs()
+    with pytest.raises(ValueError, match="barrier"):
+        polytope_solver().solve(x0, u0, s0, z0, barrier=0.0)
+    assert int(polytope_solver(max_iter=0).solve(x0, u0, s0, z0, barrier=0.5).iterations) == 0
+    assert float(polytope_solver(max_iter=0).solve(x0, u0, s0, z0, barrier=0.5).barrier) == 0.5
+    with pytest.raises(ValueError):
+        IPDDPOptions(max_backtracks=-1)
+
+
+# ----------------------------------------------------------------- stopping tests ---
+
+
+def test_polytope_projection_matches_scipy():
+    polytope, Gn, Hn = PolytopeLogBarrier(G, H), np.asarray(G), np.asarray(H)
+    for p in np.random.default_rng(0).normal(scale=float(np.max(Hn)), size=(20, 2)):
+        ref = scipy.optimize.minimize(
+            lambda v, p=p: 0.5 * np.sum((v - p) ** 2), p, jac=lambda v, p=p: v - p, method="SLSQP",
+            constraints=[{"type": "ineq", "fun": lambda v: Hn - Gn @ v}], options={"ftol": 1e-15},
+        )  # fmt: skip
+        np.testing.assert_allclose(polytope.project(jnp.asarray(p)), ref.x, atol=1e-7)
+
+
+def test_kkt_error_matches_autodiff():
+    """``E_0`` with the open-loop Lagrangian gradient from the adjoint sweep against ``jax.grad``
+    (state-dependent constraints, duals large enough that the scaling ``c`` exceeds 1)."""
+    problem, horizon = nonlinear_problem(), 6
+    ip = InteriorPointDDP(problem, state_constraints)
+    x0, u = jnp.array([0.3, -0.2]), 0.4 * jnp.cos(jnp.arange(horizon, dtype=float))[:, None]
+    rng = np.random.default_rng(1)
+    s, z = jnp.asarray(rng.uniform(0.1, 1.0, (horizon, 3))), jnp.asarray(rng.uniform(100.0, 400.0, (horizon, 3)))
+    states = problem.rollout(x0, u)
+
+    def lagrangian(v):
+        xs = problem.rollout(x0, v)
+        return problem.total_cost(xs, v) + jnp.sum(z * jax.vmap(state_constraints)(xs[:-1], v))
+
+    c = float(jnp.mean(z)) / 100.0
+    primal = jax.vmap(state_constraints)(states[:-1], u) + s
+    expected = max(float(jnp.max(jnp.abs(jax.grad(lagrangian)(u)))) / c, float(jnp.max(jnp.abs(primal))), float(jnp.max(s * z)) / c)
+    *_, kkt_error = ip.backward_pass(states, u, s, z, 0.1, 1e-2)
+    assert c > 1
+    np.testing.assert_allclose(kkt_error, expected, rtol=1e-12)
+
+
+def test_kkt_stopping_reaches_the_constrained_optimum():
+    problem, x0 = lq_1d(), jnp.array([2.0, 0.0])  # 26 of the 30 optimal controls on the bound
+    u_ref, _ = reference_qp(problem, x0, 1, box(-1.0, 1.0))
+    ip = InteriorPointDDP(problem, box_constraints, TIGHT)
+    sol = ip.solve(x0, jnp.zeros((T, 1)), jnp.ones((T, 2)), jnp.ones((T, 2)))
+    assert sol.status == Status.CONVERGED and sol.error < 1e-6
+    # s z <= tol puts a control within tol / z of its bound: at stage 26 z = 0.03, so 1e-5 away
+    np.testing.assert_allclose(sol.controls, u_ref, atol=1e-4)

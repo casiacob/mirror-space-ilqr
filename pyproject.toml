@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "msilqr"
+version = "1.0.0.dev0"
+description = "Mirror-space iLQR: dynamic programming for optimal control with convex control constraints"
+readme = "README.md"
+requires-python = ">=3.12"  # jax 0.12 needs Python 3.12
+authors = [
+    { name = "Casian Iacob" },
+    { name = "Hany Abdulsamad" },
+]
+license = "MIT"
+license-files = ["LICENSE"]
+dependencies = [
+    "jax>=0.12",  # tested with 0.12.0.1
+    "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+# benchmark runner and figures
+benchmarks = ["matplotlib>=3.8"]
+dev = ["matplotlib>=3.8", "pytest>=8", "ruff>=0.5"]
+
+[tool.setuptools]
+packages = ["msilqr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E741"]  # l is a natural name for a pole length
+
+[tool.ruff.lint.per-file-ignores]
+"benchmarks/run.py" = ["E402"]
