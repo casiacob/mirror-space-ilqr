@@ -1,0 +1,17 @@
+\begin{tikzpicture}
+  \begin{groupplot}[
+      paper,
+      group style={group size=2 by 1, horizontal sep=0.35cm},
+      xlabel={Time [s]},
+      xtick={0, 2, 4},
+    ]
+    \nextgroupplot[ytick={0, 2}, legend pos=north west]
+    \addplot table[x=t, y=p] {\datadir/fig3_cartpole.csv};
+    \addplot table[x=t, y=theta] {\datadir/fig3_cartpole.csv};
+    \legend{$p$, $\theta$}
+
+    \nextgroupplot[ytick={-50, 0, 50}, yticklabel pos=right, legend pos=south east]
+    \addplot table[x=t, y=u] {\datadir/fig3_cartpole.csv};
+    \legend{$u$}
+  \end{groupplot}
+\end{tikzpicture}

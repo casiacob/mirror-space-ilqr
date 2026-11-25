@@ -1,0 +1,18 @@
+\begin{tikzpicture}
+  \begin{groupplot}[
+      paper,
+      group style={group size=2 by 1, horizontal sep=0.35cm},
+      xlabel={Time [s]},
+      xtick={0, 2, 4, 6},
+    ]
+    \nextgroupplot[ytick={0, 0.5, 1}, legend pos=south east]
+    \addplot table[x=t, y=p1] {\datadir/fig2_double_integrator.csv};
+    \addplot table[x=t, y=p2] {\datadir/fig2_double_integrator.csv};
+    \legend{$p^1$, $p^2$}
+
+    \nextgroupplot[ymin=-0.5, ymax=0.5, ytick={-0.5, 0, 0.5}, yticklabel pos=right, legend pos=north east]
+    \addplot table[x=t, y=u1] {\datadir/fig2_double_integrator.csv};
+    \addplot table[x=t, y=u2] {\datadir/fig2_double_integrator.csv};
+    \legend{$u^1$, $u^2$}
+  \end{groupplot}
+\end{tikzpicture}

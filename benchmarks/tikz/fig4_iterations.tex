@@ -1,0 +1,29 @@
+\begin{tikzpicture}
+  \begin{groupplot}[
+      paper,
+      group style={group size=2 by 1, horizontal sep=0.35cm, y descriptions at=edge left},
+      width=3.4cm,
+      height=2.9cm,
+      xlabel={Time step [$t$]},
+      xtick distance=100,
+      enlarge x limits=0.02,
+      enlarge y limits=false,
+      ymin=0,
+      ymax=45,
+      ytick={0, 10, 20, 30, 40},
+      minor grid style={gray!50},
+      title style={text depth=0.25em},
+      legend pos=north east,
+      legend style={font=\footnotesize},
+    ]
+    \nextgroupplot[title={Double Integrator}, ylabel={Avg. iterations}]
+    \addplot table[x=step, y=ms] {\datadir/fig4_double_integrator.csv};
+    \addplot table[x=step, y=ip] {\datadir/fig4_double_integrator.csv};
+    \legend{MS, IP}
+
+    \nextgroupplot[title={Cart-Pole}]
+    \addplot table[x=step, y=ms] {\datadir/fig4_cartpole.csv};
+    \addplot table[x=step, y=ip] {\datadir/fig4_cartpole.csv};
+    \legend{MS, IP}
+  \end{groupplot}
+\end{tikzpicture}

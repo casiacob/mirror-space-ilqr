@@ -5,6 +5,10 @@ Usage::
     python benchmarks/run.py --out results
     python benchmarks/figures.py --results results --out figures
 
+Writes the plotted data to ``<out>/data/*.csv`` and copies the pgfplots sources from
+``benchmarks/tikz`` to ``<out>``. With ``pdflatex`` on the path, each figure is also
+compiled to ``<out>/<figure>.pdf``.
+
 Fig. 2: double integrator with polytopic constraints (case ``polytope``).
 Fig. 3: cart-pole swing-up with box constraints (case ``cartpole``).
 Fig. 4: iterations per MPC step, mirror-space (MS) vs interior-point (IP), averaged over
@@ -16,13 +20,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 
-import matplotlib
+import numpy as np
 
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt  # noqa: E402
-import numpy as np  # noqa: E402
-
+TIKZ = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tikz")
+FIGURES = ("fig2_double_integrator", "fig3_cartpole", "fig4_iterations")
 DT = {"polytope": 0.02, "cartpole": 0.01}
 WINDOW = 10
 
@@ -39,70 +43,67 @@ def _load(results: str, case: str) -> dict:
     return dict(np.load(os.path.join(results, case + ".npz")))
 
 
-def fig2(results: str):
-    d = _load(results, "polytope")
+def trajectory(results: str, case: str, states: tuple[str, ...], controls: tuple[str, ...]) -> dict:
+    """Closed loop of the first seed: time, the leading states and the controls."""
+    d = _load(results, case)
     xs, us = d["ms_states"][0], d["ms_controls"][0]
-    t = DT["polytope"] * np.arange(len(xs))
-    fig, (a, b) = plt.subplots(1, 2, figsize=(7, 2.6))
-    a.plot(t, xs[:, 0], label="$p^1$")
-    a.plot(t, xs[:, 1], "--", label="$p^2$")
-    b.plot(t[:-1], us[:, 0], label="$u^1$")
-    b.plot(t[:-1], us[:, 1], "--", label="$u^2$")
-    for ax in (a, b):
-        ax.set_xlabel("Time [s]")
-        ax.grid(True)
-        ax.legend()
-    fig.tight_layout()
-    return fig
+    us = np.vstack([us, np.full((1, us.shape[1]), np.nan)])  # no control at the final state
+    columns = {"t": DT[case] * np.arange(len(xs))}
+    columns.update({name: xs[:, i] for i, name in enumerate(states)})
+    columns.update({name: us[:, i] for i, name in enumerate(controls)})
+    return columns
 
 
-def fig3(results: str):
-    d = _load(results, "cartpole")
-    xs, us = d["ms_states"][0], d["ms_controls"][0]
-    t = DT["cartpole"] * np.arange(len(xs))
-    fig, (a, b) = plt.subplots(1, 2, figsize=(7, 2.6))
-    a.plot(t, xs[:, 0], label="$p$")
-    a.plot(t, xs[:, 1], "--", label=r"$\theta$")
-    b.plot(t[:-1], us[:, 0], label="$u$")
-    for bound in (-50.0, 50.0):
-        b.axhline(bound, color="gray", lw=0.8, ls=":")
-    for ax in (a, b):
-        ax.set_xlabel("Time [s]")
-        ax.grid(True)
-        ax.legend()
-    fig.tight_layout()
-    return fig
+def iterations(results: str, case: str) -> dict:
+    """Smoothed iterations per MPC step of both methods, averaged over the seeds."""
+    d = _load(results, case)
+    columns = {"step": np.arange(d["ms_iterations"].shape[1])}
+    for method in ("ms", "ip"):
+        columns[method] = np.mean([moving_average(it) for it in d[f"{method}_iterations"]], axis=0)
+    return columns
 
 
-def fig4(results: str):
-    fig, axes = plt.subplots(1, 2, figsize=(7, 2.6), sharey=True)
-    for ax, case, title in zip(axes, ("polytope-compare", "cartpole-compare"), ("Double Integrator", "Cart-Pole"), strict=True):
-        d = _load(results, case)
-        for method, style, label in (("ms", "-", "MS"), ("ip", "--", "IP")):
-            curve = np.mean([moving_average(it) for it in d[f"{method}_iterations"]], axis=0)
-            ax.plot(np.arange(len(curve)), curve, style, label=label)
-        ax.set_title(title)
-        ax.set_xlabel("Time step [t]")
-        ax.grid(True)
-        ax.legend()
-    axes[0].set_ylabel("Avg. iterations")
-    fig.tight_layout()
-    return fig
+def write_csv(path: str, columns: dict) -> None:
+    np.savetxt(path, np.column_stack(list(columns.values())), delimiter=",", header=",".join(columns), comments="", fmt="%.8g")
+
+
+def write_data(results: str, out: str) -> None:
+    tables = {
+        "fig2_double_integrator": trajectory(results, "polytope", ("p1", "p2"), ("u1", "u2")),
+        "fig3_cartpole": trajectory(results, "cartpole", ("p", "theta"), ("u",)),
+        "fig4_double_integrator": iterations(results, "polytope-compare"),
+        "fig4_cartpole": iterations(results, "cartpole-compare"),
+    }
+    os.makedirs(os.path.join(out, "data"), exist_ok=True)
+    for name, columns in tables.items():
+        write_csv(os.path.join(out, "data", name + ".csv"), columns)
+        print(f"[figures] data/{name}.csv")
+
+
+def compile_figures(out: str) -> None:
+    for source in sorted(os.listdir(TIKZ)):
+        shutil.copy(os.path.join(TIKZ, source), out)
+    if shutil.which("pdflatex") is None:
+        print("[figures] pdflatex not found, wrote the sources only")
+        return
+    for name in FIGURES:
+        command = ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", f"-jobname={name}"]
+        command.append(rf"\def\figurefile{{{name}}}\input{{standalone}}")
+        if subprocess.run(command, cwd=out, stdout=subprocess.DEVNULL).returncode != 0:
+            raise SystemExit(f"pdflatex failed, see {os.path.join(out, name + '.log')}")
+        for ext in (".aux", ".log"):
+            os.remove(os.path.join(out, name + ext))
+        print(f"[figures] {name}.pdf")
 
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("--results", required=True)
     p.add_argument("--out", required=True)
-    p.add_argument("--formats", nargs="*", default=["pdf", "png"])
     args = p.parse_args(argv)
     os.makedirs(args.out, exist_ok=True)
-    for name, make in (("fig2_double_integrator", fig2), ("fig3_cartpole", fig3), ("fig4_iterations", fig4)):
-        fig = make(args.results)
-        for ext in args.formats:
-            fig.savefig(os.path.join(args.out, f"{name}.{ext}"), dpi=200)
-        plt.close(fig)
-        print(f"[figures] {name}")
+    write_data(args.results, args.out)
+    compile_figures(args.out)
     return 0
 
 

@@ -1,0 +1,8 @@
+% Compiles one figure on its own:
+%   pdflatex -jobname=fig2_double_integrator "\def\figurefile{fig2_double_integrator}\input{standalone}"
+\documentclass[border=1pt]{standalone}
+\usepackage{times}
+\input{style}
+\begin{document}
+\input{\figurefile}
+\end{document}
